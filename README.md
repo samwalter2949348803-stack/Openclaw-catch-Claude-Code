@@ -44,6 +44,7 @@ Environment variables:
 | `DEFAULT_CWD` | `/root` | Default working directory for Claude |
 | `CLAUDE_SESSIONS_DIR` | `~/.claude/projects/-root` | Where Claude session files are stored |
 | `AUTH_TOKEN` | *(empty)* | Set to require `Bearer` token auth on all endpoints |
+| `MAX_CONCURRENT` | `3` | Max concurrent Claude processes |
 
 ## Auto-Restart with systemd
 
@@ -104,6 +105,9 @@ All endpoints are prefixed with `/backend-api/claude-code`.
 2. Spawns `claude -p` as child processes, unsetting `CLAUDECODE` env var to avoid nesting errors
 3. Named sessions map a friendly name to a Claude session ID for multi-turn conversations
 4. Streaming uses Claude's `--output-format stream-json` and forwards events as SSE
+5. Sessions are persisted to `~/.claude/session-store.json` and survive server restarts
+6. Per-session locking prevents concurrent requests from corrupting the same session
+7. Concurrent process count is capped at `MAX_CONCURRENT` (default 3)
 
 ## License
 
