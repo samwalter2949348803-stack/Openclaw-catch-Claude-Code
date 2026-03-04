@@ -14,9 +14,11 @@ import path from 'node:path';
 
 const PORT = parseInt(process.env.PORT || '18795');
 const CLAUDE_BIN = process.env.CLAUDE_BIN || 'claude';
-const DEFAULT_CWD = '/root';
+const DEFAULT_CWD = process.env.DEFAULT_CWD || '/root';
 const DEFAULT_TIMEOUT = 120_000;
-const SESSIONS_DIR = '/root/.claude/projects/-root';
+const SESSIONS_DIR = process.env.CLAUDE_SESSIONS_DIR ||
+  path.join(process.env.HOME || '/root', '.claude', 'projects', '-root');
+const AUTH_TOKEN = process.env.AUTH_TOKEN || ''; // Set to require Bearer token auth
 
 // In-memory session store: name → { sessionId, cwd, created, lastActivity, config, turns }
 const sessions = new Map();
@@ -564,21 +566,39 @@ const server = http.createServer(async (req, res) => {
   const pathname = url.pathname;
   const method = req.method;
 
-  // Strip prefix
-  if (!pathname.startsWith(PREFIX)) {
-    return json(res, { ok: false, error: `Expected prefix ${PREFIX}` }, 404);
-  }
-  const route = pathname.slice(PREFIX.length) || '/';
-
   // CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
   if (method === 'OPTIONS') {
     res.writeHead(204);
     return res.end();
   }
+
+  // Health check (no prefix, no auth)
+  if (pathname === '/health') {
+    return json(res, {
+      ok: true,
+      uptime: process.uptime(),
+      activeSessions: sessions.size,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  // Auth check
+  if (AUTH_TOKEN) {
+    const auth = req.headers.authorization || '';
+    if (auth !== `Bearer ${AUTH_TOKEN}`) {
+      return json(res, { ok: false, error: 'Unauthorized' }, 401);
+    }
+  }
+
+  // Strip prefix
+  if (!pathname.startsWith(PREFIX)) {
+    return json(res, { ok: false, error: `Expected prefix ${PREFIX}` }, 404);
+  }
+  const route = pathname.slice(PREFIX.length) || '/';
 
   const t0 = Date.now();
   console.log(`[REQ] ${method} ${route}`);
@@ -599,4 +619,5 @@ server.listen(PORT, '127.0.0.1', () => {
   console.log(`Prefix: ${PREFIX}`);
   console.log(`Claude binary: ${CLAUDE_BIN}`);
   console.log(`Default CWD: ${DEFAULT_CWD}`);
+  console.log(`Auth: ${AUTH_TOKEN ? 'enabled' : 'disabled (set AUTH_TOKEN to enable)'}`);
 });
