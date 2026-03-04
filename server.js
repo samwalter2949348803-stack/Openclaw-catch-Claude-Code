@@ -28,6 +28,18 @@ const SESSION_STORE_PATH = path.join(
 const sessions = new Map();
 let activeProcesses = 0;
 
+// Per-session lock: name → Promise (serializes requests to the same session)
+const sessionLocks = new Map();
+
+/** Acquire a per-session lock. Returns a release function. */
+function acquireSessionLock(name) {
+  const prev = sessionLocks.get(name) || Promise.resolve();
+  let release;
+  const next = new Promise(resolve => { release = resolve; });
+  sessionLocks.set(name, next);
+  return prev.then(() => release);
+}
+
 // ── Session persistence ─────────────────────────────────────────────────
 
 function saveSessionStore() {
@@ -121,11 +133,12 @@ function runClaude(args, cwd = DEFAULT_CWD, timeout = DEFAULT_TIMEOUT) {
   });
 }
 
-/** Spawn claude CLI for SSE streaming */
-function streamClaude(args, cwd, timeout, res) {
+/** Spawn claude CLI for SSE streaming. onDone is called when the stream ends (for releasing locks). */
+function streamClaude(args, cwd, timeout, res, onDone) {
   if (activeProcesses >= MAX_CONCURRENT) {
     res.writeHead(429, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: false, error: `Too many concurrent requests (${activeProcesses}/${MAX_CONCURRENT}). Try again later.` }));
+    if (onDone) onDone();
     return;
   }
   activeProcesses++;
@@ -184,7 +197,7 @@ function streamClaude(args, cwd, timeout, res) {
   child.stderr.on('data', d => stderrBuf += d);
 
   let streamDone = false;
-  const finishStream = () => { if (!streamDone) { streamDone = true; activeProcesses--; } };
+  const finishStream = () => { if (!streamDone) { streamDone = true; activeProcesses--; if (onDone) onDone(); } };
 
   const timer = setTimeout(() => {
     child.kill('SIGTERM');
@@ -447,17 +460,19 @@ async function handleRoute(method, route, body, req, res) {
     const sess = sessions.get(name);
     if (!sess) return json(res, { ok: false, error: `Session '${name}' not found` }, 404);
 
-    const args = ['--resume', sess.sessionId, '-p', message, '--output-format', 'json'];
-    if (sess.config?.permissionMode) args.push('--permission-mode', sess.config.permissionMode);
-    if (sess.config?.allowedTools?.length) args.push('--allowed-tools', ...sess.config.allowedTools);
-    if (sess.config?.disallowedTools?.length) args.push('--disallowed-tools', ...sess.config.disallowedTools);
-    if (sess.config?.model) args.push('--model', sess.config.model);
-    if (sess.config?.maxTurns) args.push('--max-turns', String(sess.config.maxTurns));
-    if (sess.config?.maxBudgetUsd) args.push('--max-budget-usd', String(sess.config.maxBudgetUsd));
-    if (sess.config?.dangerouslySkipPermissions) args.push('--dangerously-skip-permissions');
-    if (sess.config?.addDir?.length) args.push('--add-dir', ...sess.config.addDir);
-
+    // Serialize requests to the same session to prevent concurrent resume conflicts
+    const release = await acquireSessionLock(name);
     try {
+      const args = ['--resume', sess.sessionId, '-p', message, '--output-format', 'json'];
+      if (sess.config?.permissionMode) args.push('--permission-mode', sess.config.permissionMode);
+      if (sess.config?.allowedTools?.length) args.push('--allowed-tools', ...sess.config.allowedTools);
+      if (sess.config?.disallowedTools?.length) args.push('--disallowed-tools', ...sess.config.disallowedTools);
+      if (sess.config?.model) args.push('--model', sess.config.model);
+      if (sess.config?.maxTurns) args.push('--max-turns', String(sess.config.maxTurns));
+      if (sess.config?.maxBudgetUsd) args.push('--max-budget-usd', String(sess.config.maxBudgetUsd));
+      if (sess.config?.dangerouslySkipPermissions) args.push('--dangerously-skip-permissions');
+      if (sess.config?.addDir?.length) args.push('--add-dir', ...sess.config.addDir);
+
       const result = await runClaude(args, sess.cwd, timeout || DEFAULT_TIMEOUT);
       sess.lastActivity = new Date().toISOString();
       sess.turns++;
@@ -469,6 +484,8 @@ async function handleRoute(method, route, body, req, res) {
       return json(res, { ok: true, response });
     } catch (err) {
       return json(res, { ok: false, error: err.message }, 500);
+    } finally {
+      release();
     }
   }
 
@@ -479,6 +496,9 @@ async function handleRoute(method, route, body, req, res) {
 
     const sess = sessions.get(name);
     if (!sess) return json(res, { ok: false, error: `Session '${name}' not found` }, 404);
+
+    // Serialize requests to the same session
+    const release = await acquireSessionLock(name);
 
     const args = ['--resume', sess.sessionId, '-p', message, '--output-format', 'stream-json', '--verbose'];
     if (sess.config?.permissionMode) args.push('--permission-mode', sess.config.permissionMode);
@@ -492,7 +512,7 @@ async function handleRoute(method, route, body, req, res) {
     sess.turns++;
     saveSessionStore();
 
-    return streamClaude(args, sess.cwd, timeout || DEFAULT_TIMEOUT, res);
+    return streamClaude(args, sess.cwd, timeout || DEFAULT_TIMEOUT, res, release);
   }
 
   // ── Session: list ──
