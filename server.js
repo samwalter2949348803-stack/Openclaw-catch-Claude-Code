@@ -19,9 +19,43 @@ const DEFAULT_TIMEOUT = 120_000;
 const SESSIONS_DIR = process.env.CLAUDE_SESSIONS_DIR ||
   path.join(process.env.HOME || '/root', '.claude', 'projects', '-root');
 const AUTH_TOKEN = process.env.AUTH_TOKEN || ''; // Set to require Bearer token auth
+const MAX_CONCURRENT = parseInt(process.env.MAX_CONCURRENT || '3');
+const SESSION_STORE_PATH = path.join(
+  process.env.HOME || '/root', '.claude', 'session-store.json'
+);
 
 // In-memory session store: name → { sessionId, cwd, created, lastActivity, config, turns }
 const sessions = new Map();
+let activeProcesses = 0;
+
+// ── Session persistence ─────────────────────────────────────────────────
+
+function saveSessionStore() {
+  try {
+    const data = {};
+    for (const [name, sess] of sessions) {
+      data[name] = sess;
+    }
+    fs.writeFileSync(SESSION_STORE_PATH, JSON.stringify(data, null, 2));
+  } catch (err) {
+    console.error('[STORE] Failed to save sessions:', err.message);
+  }
+}
+
+function loadSessionStore() {
+  try {
+    if (!fs.existsSync(SESSION_STORE_PATH)) return;
+    const data = JSON.parse(fs.readFileSync(SESSION_STORE_PATH, 'utf-8'));
+    for (const [name, sess] of Object.entries(data)) {
+      sessions.set(name, sess);
+    }
+    console.log(`[STORE] Loaded ${sessions.size} sessions from disk`);
+  } catch (err) {
+    console.error('[STORE] Failed to load sessions:', err.message);
+  }
+}
+
+loadSessionStore();
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -47,30 +81,40 @@ function parseBody(req) {
 /** Spawn claude CLI, return { stdout, stderr, exitCode, parsed } */
 function runClaude(args, cwd = DEFAULT_CWD, timeout = DEFAULT_TIMEOUT) {
   return new Promise((resolve, reject) => {
+    if (activeProcesses >= MAX_CONCURRENT) {
+      return reject(new Error(`Too many concurrent requests (${activeProcesses}/${MAX_CONCURRENT}). Try again later.`));
+    }
+    activeProcesses++;
+
     const env = { ...process.env };
     delete env.CLAUDECODE;
     delete env.CLAUDE_CODE_ENTRYPOINT;
 
-    console.log(`[SPAWN] ${CLAUDE_BIN} ${args.join(' ')} (cwd=${cwd}, timeout=${timeout}ms)`);
+    console.log(`[SPAWN] ${CLAUDE_BIN} ${args.join(' ')} (cwd=${cwd}, timeout=${timeout}ms, active=${activeProcesses}/${MAX_CONCURRENT})`);
     const child = spawn(CLAUDE_BIN, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
     console.log(`[SPAWN] PID=${child.pid}`);
 
-    let stdout = '', stderr = '';
+    let stdout = '', stderr = '', done = false;
     child.stdout.on('data', d => stdout += d);
     child.stderr.on('data', d => stderr += d);
 
+    const finish = () => { if (!done) { done = true; activeProcesses--; } };
+
     const timer = setTimeout(() => {
       child.kill('SIGTERM');
+      finish();
       reject(new Error(`Claude timed out after ${timeout}ms`));
     }, timeout);
 
     child.on('close', code => {
+      finish();
       clearTimeout(timer);
       let parsed = null;
       try { parsed = JSON.parse(stdout); } catch {}
       resolve({ stdout, stderr, exitCode: code, parsed });
     });
     child.on('error', err => {
+      finish();
       clearTimeout(timer);
       reject(err);
     });
@@ -79,6 +123,13 @@ function runClaude(args, cwd = DEFAULT_CWD, timeout = DEFAULT_TIMEOUT) {
 
 /** Spawn claude CLI for SSE streaming */
 function streamClaude(args, cwd, timeout, res) {
+  if (activeProcesses >= MAX_CONCURRENT) {
+    res.writeHead(429, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: false, error: `Too many concurrent requests (${activeProcesses}/${MAX_CONCURRENT}). Try again later.` }));
+    return;
+  }
+  activeProcesses++;
+
   const env = { ...process.env };
   delete env.CLAUDECODE;
   delete env.CLAUDE_CODE_ENTRYPOINT;
@@ -132,13 +183,18 @@ function streamClaude(args, cwd, timeout, res) {
   let stderrBuf = '';
   child.stderr.on('data', d => stderrBuf += d);
 
+  let streamDone = false;
+  const finishStream = () => { if (!streamDone) { streamDone = true; activeProcesses--; } };
+
   const timer = setTimeout(() => {
     child.kill('SIGTERM');
+    finishStream();
     sendSSE({ type: 'error', error: 'Timed out' });
     res.end();
   }, timeout);
 
   child.on('close', code => {
+    finishStream();
     clearTimeout(timer);
     if (buffer.trim()) {
       try {
@@ -160,6 +216,7 @@ function streamClaude(args, cwd, timeout, res) {
   });
 
   child.on('error', err => {
+    finishStream();
     clearTimeout(timer);
     sendSSE({ type: 'error', error: err.message });
     res.end();
@@ -167,12 +224,28 @@ function streamClaude(args, cwd, timeout, res) {
 
   // If client disconnects, kill child
   res.on('close', () => {
+    finishStream();
     clearTimeout(timer);
     child.kill('SIGTERM');
   });
 }
 
-/** Read session JSONL files and extract metadata */
+/** Read first N bytes of a file to extract metadata without loading entire file */
+function readHead(filePath, bytes = 8192) {
+  let fd;
+  try {
+    fd = fs.openSync(filePath, 'r');
+    const buf = Buffer.alloc(bytes);
+    const bytesRead = fs.readSync(fd, buf, 0, bytes, 0);
+    return buf.toString('utf-8', 0, bytesRead);
+  } catch {
+    return '';
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+}
+
+/** Read session JSONL files and extract metadata (reads only first 8KB per file) */
 async function listClaudeSessions() {
   try {
     const files = fs.readdirSync(SESSIONS_DIR).filter(f => f.endsWith('.jsonl'));
@@ -182,34 +255,34 @@ async function listClaudeSessions() {
       const filePath = path.join(SESSIONS_DIR, file);
       const stat = fs.statSync(filePath);
 
-      // Read first few lines to get metadata
-      let summary = '', projectPath = '', messageCount = 0;
-      try {
-        const content = fs.readFileSync(filePath, 'utf-8');
-        const lines = content.split('\n').filter(l => l.trim());
-        messageCount = lines.length;
-        for (const line of lines.slice(0, 10)) {
-          try {
-            const obj = JSON.parse(line);
-            if (obj.cwd) projectPath = obj.cwd;
-            if (obj.type === 'user' && obj.message?.content) {
-              const text = typeof obj.message.content === 'string'
-                ? obj.message.content
-                : obj.message.content.find(c => c.type === 'text')?.text || '';
-              if (text && !summary) {
-                summary = text.substring(0, 100).replace(/\n/g, ' ');
-              }
+      // Read only first 8KB to get metadata
+      let summary = '', projectPath = '';
+      const head = readHead(filePath);
+      const lines = head.split('\n').filter(l => l.trim());
+      for (const line of lines.slice(0, 10)) {
+        try {
+          const obj = JSON.parse(line);
+          if (obj.cwd) projectPath = obj.cwd;
+          if (obj.type === 'user' && obj.message?.content) {
+            const text = typeof obj.message.content === 'string'
+              ? obj.message.content
+              : obj.message.content.find(c => c.type === 'text')?.text || '';
+            if (text && !summary) {
+              summary = text.substring(0, 100).replace(/\n/g, ' ');
             }
-          } catch {}
-        }
-      } catch {}
+          }
+        } catch {}
+      }
+
+      // Estimate message count from file size (avg ~1KB per line)
+      const estimatedMessages = Math.max(lines.length, Math.round(stat.size / 1024));
 
       results.push({
         sessionId,
         summary,
         projectPath,
         modified: stat.mtime.toISOString(),
-        messageCount,
+        messageCount: estimatedMessages,
       });
     }
     // Sort by modified date, newest first
@@ -358,6 +431,7 @@ async function handleRoute(method, route, body, req, res) {
         config: body,
         turns: 0,
       });
+      saveSessionStore();
 
       return json(res, { ok: true, claudeSessionId: sessionId });
     } catch (err) {
@@ -389,6 +463,7 @@ async function handleRoute(method, route, body, req, res) {
       sess.turns++;
       // Update session ID if claude returned a new one
       if (result.parsed?.session_id) sess.sessionId = result.parsed.session_id;
+      saveSessionStore();
 
       const response = result.parsed?.result || result.stdout;
       return json(res, { ok: true, response });
@@ -415,6 +490,7 @@ async function handleRoute(method, route, body, req, res) {
 
     sess.lastActivity = new Date().toISOString();
     sess.turns++;
+    saveSessionStore();
 
     return streamClaude(args, sess.cwd, timeout || DEFAULT_TIMEOUT, res);
   }
@@ -438,6 +514,7 @@ async function handleRoute(method, route, body, req, res) {
     const { name } = body;
     if (!name) return json(res, { ok: false, error: 'name required' }, 400);
     sessions.delete(name);
+    saveSessionStore();
     return json(res, { ok: true });
   }
 
@@ -508,6 +585,7 @@ async function handleRoute(method, route, body, req, res) {
       sess.sessionId = result.parsed?.session_id || null;
       sess.lastActivity = new Date().toISOString();
       sess.turns = 0;
+      saveSessionStore();
       return json(res, { ok: true });
     } catch (err) {
       return json(res, { ok: false, error: err.message }, 500);
@@ -582,6 +660,8 @@ const server = http.createServer(async (req, res) => {
       ok: true,
       uptime: process.uptime(),
       activeSessions: sessions.size,
+      activeProcesses,
+      maxConcurrent: MAX_CONCURRENT,
       timestamp: new Date().toISOString(),
     });
   }
