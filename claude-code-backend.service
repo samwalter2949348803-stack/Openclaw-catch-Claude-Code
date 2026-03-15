@@ -1,0 +1,18 @@
+[Unit]
+Description=Claude Code Backend API for openclaw-claude-code-skill
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/node /root/openclaw-catch-claude-code/server.js
+WorkingDirectory=/root/openclaw-catch-claude-code
+Restart=always
+RestartSec=5
+Environment=PORT=18795
+# Uncomment to enable auth:
+# Environment=AUTH_TOKEN=your-secret-token
+# Unset to prevent nesting errors:
+UnsetEnvironment=CLAUDECODE CLAUDE_CODE_ENTRYPOINT
+
+[Install]
+WantedBy=multi-user.target

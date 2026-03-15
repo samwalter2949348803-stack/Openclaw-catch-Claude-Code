@@ -1,0 +1,16 @@
+{
+  "name": "openclaw-catch-claude-code",
+  "version": "1.0.0",
+  "description": "Backend API server for openclaw claude-code-skill — bridges claude-code-skill CLI to Claude Code CLI",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": ["openclaw", "claude-code", "mcp", "backend-api"],
+  "license": "MIT"
+}

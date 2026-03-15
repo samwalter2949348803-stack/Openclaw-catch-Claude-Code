@@ -1,0 +1,20 @@
+# Claude Code configuration
+.claude/
+CLAUDE.md
+
+# Dependencies
+node_modules/
+
+# Environment & secrets
+.env
+.env.*
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Session store
+session-store.json
