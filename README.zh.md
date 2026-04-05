@@ -2,25 +2,25 @@
 
 # Openclaw Catch Claude Code
 
-龙虾钳住了 Claude —— 小模型指挥大模型干活。
+**龙虾与Claude握手了 —— 小模型指挥大模型干活。**
 
 > **小马拉大车：用最低成本，释放 Claude Code 的全部能力。**
 >
-> Anthropic 已限制 OpenClaw 直接使用 Claude 订阅，调 API 成本高昂。
-> 我们的方案：让任意便宜的小模型（GPT-mini、Gemini Flash、甚至本地 Ollama）
-> 在 OpenClaw 上当秘书，把任务指派给 Claude Code CLI —— 用的是用户自己的 CLI 订阅。
-> **秘书便宜，干活的人强** —— 这就是小马拉大车。
+> **Anthropic 已限制 OpenClaw 直接使用 Claude 订阅，调 API 成本高昂。**
+> **我们的方案：让任意便宜的小模型（GPT-mini、Gemini Flash、甚至本地 Ollama）**
+> **在 OpenClaw 上当秘书，把任务指派给 Claude Code CLI —— 用的是用户自己的 CLI 订阅。**
+> **秘书便宜，干活的人强 —— 这就是小马拉大车。**
 >
-> 怀着谦虚的心，为人类 AI 开源事业尽一份力。
+> **怀着谦虚的心，为人类 AI 开源事业尽一份力。**
 
 ### 核心动机
 
 Anthropic 限制了 OpenClaw 使用 Claude 订阅，对龙虾社区影响不小。
-直接调 Claude API 又贵得让人肉疼。
+直接调 Claude API 又贵得让人心疼。
 
 但 Claude Code CLI 是独立产品 —— 用户订阅后正常使用，跟 OpenClaw 无关。
 
-我们发现了一条路：**不走 API，走 CLI。秘书用小模型，干活用 Claude。**
+**我们发现了一条路：不走 API，走 CLI。秘书用小模型，干活用 Claude。**
 
 ```
 传统方案（贵）：  OpenClaw → Claude API      → 每句话都烧钱
@@ -31,6 +31,7 @@ Anthropic 限制了 OpenClaw 使用 Claude 订阅，对龙虾社区影响不小�
 |------|-----------|
 | Claude API 成本高昂 | 小模型做分类（几乎免费），CLI 做执行（用户已有的订阅） |
 | Anthropic 限制 OpenClaw 用 Claude 订阅 | 我们用 CLI 而非 API，不受限制 |
+| 伪装 OAuth / 绕过认证有封号风险 | CLI 是用户自己正常订阅的产品，合规调用，零封号风险 |
 | 非 Claude 模型无法调用 MCP 工具 | 结构化输出路由，任意模型都能驱动 CLI |
 | OpenClaw 无法直接执行命令或编辑文件 | CLI agent 拥有完整系统访问权限 |
 | 单 CLI 会话瓶颈 | 3 个专职 agent 并行工作 |
