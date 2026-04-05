@@ -4,6 +4,12 @@
 
 基于 Claude Code CLI 的多 agent 任务编排 harness，集成 OpenClaw 调度层。
 
+> **OpenClaw 与 Claude Code CLI 之间缺失的编排层。**
+> 
+> OpenClaw 理解你的意图，Claude Code CLI 执行它。这个 harness 连接两者 --
+> 将任务路由到专职 CLI agent，每个 agent 拥有持久会话、隔离工作空间和完全自主权。
+> 支持任意 LLM 模型作为分类器（GPT、Claude、Gemini）。
+
 ## 架构
 
 ```
@@ -22,17 +28,27 @@ User (Telegram) --> OpenClaw (classifier) --> [routing: agent] tag
 OpenClaw 对 Telegram 收到的消息进行分类，并附加 `[routing: agent]` 标签。
 `message:sent` hook 将带标签的消息转发到本 harness，由 harness 分派给 CLI agent 池中对应的 agent。
 
+## 为什么做这个项目
+
+| 问题 | 我们的方案 |
+|------|-----------|
+| OpenClaw 无法直接执行 shell 命令或编辑文件 | CLI agent 拥有完整系统访问权限来完成 |
+| 非 Claude 模型无法使用 MCP 工具 | 结构化输出路由完全绕过 MCP |
+| 单 CLI 会话瓶颈 | 3 个专职 agent 并行工作 |
+| 任务不可见 | 每个工作区中的 `.tasks/` 看板，可通过 API 查询 |
+| 一刀切的配置 | 每个 agent 独立的 `.claude/` 工作空间，自定义规则、hook、subagent |
+
 ## 核心功能
 
-- **多 CLI 池** -- 3 个专用 agent（general / code / complex），每个都是长驻的 Claude Code CLI 进程
-- **独立 agent 工作区** -- `.cli-workspaces/{name}/`，支持完整的 `.claude/` 自定义配置（CLAUDE.md、settings.json、rules、subagents）
-- **结构化输出路由** -- `[routing: general|code|complex]` 标签驱动自动分派
-- **OpenClaw 集成** -- HTTP-to-CLI 桥接 + 通过 OpenClaw hook 对接 Telegram
-- **定时任务** -- 通过 OpenClaw 内置调度器支持 cron、interval 和 one-shot 三种调度模式
-- **会话持久化** -- 原子化 JSON 写入，带 schema 校验，按会话追踪 token 用量
-- **结构化日志** -- 可配置日志级别（DEBUG / INFO / WARN / ERROR）
-- **138 个测试，零外部依赖** -- 仅使用 Node.js 18+ 内置 API
-- **GitHub Actions CI** -- push 时自动运行测试
+- 🔀 **多 CLI 池** -- 3 个专用 agent（general / code / complex），每个都是长驻的 Claude Code CLI 进程
+- 🏗️ **独立 agent 工作区** -- `.cli-workspaces/{name}/`，支持完整的 `.claude/` 自定义配置（CLAUDE.md、settings.json、rules、subagents）
+- 🎯 **结构化输出路由** -- `[routing: general|code|complex]` 标签驱动自动分派
+- 🦞 **OpenClaw 集成** -- HTTP-to-CLI 桥接 + 通过 OpenClaw hook 对接 Telegram
+- ⏰ **定时任务** -- 通过 OpenClaw 内置调度器支持 cron、interval 和 one-shot 三种调度模式
+- 💾 **会话持久化** -- 原子化 JSON 写入，带 schema 校验，按会话追踪 token 用量
+- 📝 **结构化日志** -- 可配置日志级别（DEBUG / INFO / WARN / ERROR）
+- ✅ **138 个测试，零外部依赖** -- 仅使用 Node.js 18+ 内置 API
+- 🔄 **GitHub Actions CI** -- push 时自动运行测试
 
 ## 快速开始
 
@@ -167,6 +183,18 @@ OpenClaw 内置的 cron 调度器支持三种调度模式：
 执行结果可推送到 Telegram。消息中包含 `[routing: xxx]` 标签的内容会自动分派到对应的 CLI agent。
 
 完整配置指南参见 [`openclaw/cron-guide.md`](openclaw/cron-guide.md)。
+
+## 工作原理（30 秒版本）
+
+1. 你通过 Telegram 发送一条消息
+2. OpenClaw 的模型对其分类：`Processing your request... [routing: code] write unit tests`
+3. `message:sent` hook 拦截到路由标签
+4. hook 调用 harness API（`POST /cli/send`）
+5. harness 将任务分派给 `code` CLI agent
+6. Claude Code CLI 以完整文件系统访问权限执行任务
+7. 执行结果通过 Telegram Bot API 返回给你
+
+**模型只负责分类。CLI 完成所有实际工作。**
 
 ## 项目结构
 

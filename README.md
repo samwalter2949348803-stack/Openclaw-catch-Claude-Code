@@ -4,6 +4,12 @@ English | [中文](README.zh.md)
 
 Multi-agent task orchestration harness for Claude Code CLI, with OpenClaw integration.
 
+> **The missing orchestration layer between OpenClaw and Claude Code CLI.**
+> 
+> OpenClaw understands your intent. Claude Code CLI executes it. This harness connects them --
+> routing tasks to specialized CLI agents, each with persistent sessions, isolated workspaces,
+> and full autonomy. Works with any LLM model as the classifier (GPT, Claude, Gemini).
+
 ## Architecture
 
 ```
@@ -23,17 +29,27 @@ OpenClaw classifies incoming Telegram messages and attaches a `[routing: agent]`
 A `message:sent` hook forwards the tagged message to this harness, which dispatches it
 to the appropriate CLI agent in the pool.
 
+## Why This Project
+
+| Problem | Our Solution |
+|---------|-------------|
+| OpenClaw can't run shell commands or edit files directly | CLI agents with full system access do it |
+| Non-Claude models can't use MCP tools | Structured output routing bypasses MCP entirely |
+| Single CLI session bottleneck | 3 specialized agents work in parallel |
+| No task visibility | `.tasks/` board in each workspace, queryable via API |
+| One-size-fits-all config | Per-agent `.claude/` workspace with custom rules, hooks, subagents |
+
 ## Core Features
 
-- **Multi-CLI pool** -- 3 specialized agents (general / code / complex), each a long-running Claude Code CLI process
-- **Per-agent workspaces** -- `.cli-workspaces/{name}/` with full `.claude/` customization (CLAUDE.md, settings.json, rules, subagents)
-- **Structured output routing** -- `[routing: general|code|complex]` tags drive automatic dispatch
-- **OpenClaw integration** -- HTTP-to-CLI bridge + Telegram via OpenClaw hooks
-- **Scheduled tasks** -- Cron, interval, and one-shot scheduling through OpenClaw's built-in scheduler
-- **Session persistence** -- Atomic JSON writes with schema validation, token usage tracking per session
-- **Structured logging** -- Configurable log levels (DEBUG / INFO / WARN / ERROR)
-- **138 tests, zero external dependencies** -- Node.js 18+ built-in APIs only
-- **GitHub Actions CI** -- Automated test runs on push
+- 🔀 **Multi-CLI pool** -- 3 specialized agents (general / code / complex), each a long-running Claude Code CLI process
+- 🏗️ **Per-agent workspaces** -- `.cli-workspaces/{name}/` with full `.claude/` customization (CLAUDE.md, settings.json, rules, subagents)
+- 🎯 **Structured output routing** -- `[routing: general|code|complex]` tags drive automatic dispatch
+- 🦞 **OpenClaw integration** -- HTTP-to-CLI bridge + Telegram via OpenClaw hooks
+- ⏰ **Scheduled tasks** -- Cron, interval, and one-shot scheduling through OpenClaw's built-in scheduler
+- 💾 **Session persistence** -- Atomic JSON writes with schema validation, token usage tracking per session
+- 📝 **Structured logging** -- Configurable log levels (DEBUG / INFO / WARN / ERROR)
+- ✅ **138 tests, zero external dependencies** -- Node.js 18+ built-in APIs only
+- 🔄 **GitHub Actions CI** -- Automated test runs on push
 
 ## Quick Start
 
@@ -168,6 +184,18 @@ OpenClaw's built-in cron scheduler supports three scheduling modes:
 Results can be pushed to Telegram. Messages containing `[routing: xxx]` tags are automatically dispatched to the corresponding CLI agent.
 
 See [`openclaw/cron-guide.md`](openclaw/cron-guide.md) for the full configuration guide.
+
+## How It Works (30-second version)
+
+1. You send a message via Telegram
+2. OpenClaw's model classifies it: `Processing your request... [routing: code] write unit tests`
+3. A `message:sent` hook intercepts the tag
+4. The hook calls our harness API (`POST /cli/send`)
+5. The harness dispatches to the `code` CLI agent
+6. Claude Code CLI executes the task with full file system access
+7. Result is sent back to you via Telegram Bot API
+
+**The model only classifies. The CLI does all the work.**
 
 ## Project Structure
 
