@@ -8,6 +8,7 @@ node_modules/
 # Environment & secrets
 .env
 .env.*
+openclaw/.env
 
 # Logs
 *.log

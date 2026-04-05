@@ -1,0 +1,18 @@
+services:
+  openclaw-backend:
+    image: ghcr.io/openclaw/openclaw:latest
+    container_name: openclaw-backend
+    ports:
+      - "127.0.0.1:18791:18789"
+      - "127.0.0.1:18792:18790"
+    volumes:
+      - openclaw-backend-data:/home/node/.openclaw
+      - ./mcp:/mcp
+    env_file:
+      - .env
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  openclaw-backend-data:
