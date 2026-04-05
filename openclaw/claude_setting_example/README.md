@@ -1,43 +1,43 @@
-# CLI Agent 示例配置
+# CLI Agent Example Configuration
 
-本目录包含三个 CLI Agent（general / code / complex）的完整示例工作空间配置。
+This directory contains complete example workspace configurations for three CLI Agents (general / code / complex).
 
-## 目录结构
+## Directory Structure
 
 ```
 claude_setting_example/
   general/
-    CLAUDE.md            -- General Agent 的项目指令
+    CLAUDE.md            -- Project instructions for General Agent
     .claude/
-      settings.json      -- 最小化配置
+      settings.json      -- Minimal configuration
   code/
-    CLAUDE.md            -- Code Agent 的项目指令
+    CLAUDE.md            -- Project instructions for Code Agent
     .claude/
-      settings.json      -- 包含安全 hook（拦截危险命令）
+      settings.json      -- Includes safety hooks (intercepts dangerous commands)
       rules/
-        code-standards.md -- 代码标准规则
+        code-standards.md -- Code standards rules
       agents/
-        code-reviewer.md  -- 代码审查 subagent 定义
+        code-reviewer.md  -- Code reviewer subagent definition
   complex/
-    CLAUDE.md            -- Complex Agent 的项目指令
+    CLAUDE.md            -- Project instructions for Complex Agent
     .claude/
-      settings.json      -- 最小化配置
+      settings.json      -- Minimal configuration
 ```
 
-## 使用方法
+## Usage
 
-### 1. 准备工作空间
+### 1. Prepare the Workspace
 
-将示例配置复制到你的 CLI Agent 工作目录：
+Copy the example configuration to your CLI Agent working directory:
 
 ```bash
-# 假设你的项目根目录在 /root/my-project
-# 创建 .cli-workspaces 目录（运行时目录）
+# Assuming your project root is at /root/my-project
+# Create the .cli-workspaces directory (runtime directory)
 mkdir -p /root/my-project/.cli-workspaces/general
 mkdir -p /root/my-project/.cli-workspaces/code
 mkdir -p /root/my-project/.cli-workspaces/complex
 
-# 复制示例配置到各 agent 的工作空间
+# Copy example configs to each agent's workspace
 cp -r general/* /root/my-project/.cli-workspaces/general/
 cp -r general/.claude /root/my-project/.cli-workspaces/general/
 
@@ -48,46 +48,44 @@ cp -r complex/* /root/my-project/.cli-workspaces/complex/
 cp -r complex/.claude /root/my-project/.cli-workspaces/complex/
 ```
 
-### 2. 自定义配置
+### 2. Customize Configuration
 
-- 编辑每个 agent 的 `CLAUDE.md`，根据你的项目调整角色描述和规则
-- 编辑 `.claude/settings.json`，添加项目特定的 hook
-- 在 `.claude/rules/` 下添加更多规则文件
-- 在 `.claude/agents/` 下定义更多 subagent
+- Edit each agent's `CLAUDE.md` to adjust role descriptions and rules for your project
+- Edit `.claude/settings.json` to add project-specific hooks
+- Add more rule files under `.claude/rules/`
+- Define more subagents under `.claude/agents/`
 
-### 3. 启动 Agent
+### 3. Start an Agent
 
-通过 `/cli/start` 接口启动 agent 时，如果 `.cli-workspaces/{name}/` 目录存在，
-系统会自动使用该目录作为 cwd，无需手动指定：
+When starting an agent via the `/cli/start` endpoint, if the `.cli-workspaces/{name}/` directory exists,
+the system will automatically use that directory as the cwd -- no manual specification needed:
 
 ```bash
-# 自动使用 .cli-workspaces/code/ 作为 cwd
+# Automatically uses .cli-workspaces/code/ as cwd
 curl -X POST http://localhost:18795/backend-api/claude-code/cli/start \
   -H "Content-Type: application/json" \
   -d '{"name": "code"}'
 
-# 也可以手动指定 cwd 覆盖默认值
+# You can also manually specify cwd to override the default
 curl -X POST http://localhost:18795/backend-api/claude-code/cli/start \
   -H "Content-Type: application/json" \
   -d '{"name": "code", "cwd": "/custom/path"}'
 ```
 
-## 配置说明
+## Configuration Details
 
 ### CLAUDE.md
 
-Claude Code 启动时自动读取的项目指令文件。定义 agent 的角色、规则和行为约束。
+The project instruction file that Claude Code reads automatically on startup. Defines the agent's role, rules, and behavioral constraints.
 
 ### .claude/settings.json
 
-Claude Code 的本地设置文件，支持 hooks 配置。示例中 code agent 配置了 `PreToolUse` hook，
-会在执行 Bash 命令前检查是否包含危险操作（如 `rm -rf`、`git push --force`）。
+Claude Code's local settings file with hooks configuration support. In the example, the code agent is configured with a `PreToolUse` hook that checks whether a Bash command contains dangerous operations (such as `rm -rf` or `git push --force`) before execution.
 
 ### .claude/rules/
 
-额外的规则文件目录，Claude Code 会自动加载目录下所有 `.md` 文件作为补充规则。
+Directory for additional rule files. Claude Code automatically loads all `.md` files in this directory as supplementary rules.
 
 ### .claude/agents/
 
-Subagent 定义目录。每个 `.md` 文件定义一个可派发的 subagent，包含名称、描述、
-可用工具和行为指令。
+Subagent definition directory. Each `.md` file defines a dispatchable subagent, including its name, description, available tools, and behavioral instructions.
