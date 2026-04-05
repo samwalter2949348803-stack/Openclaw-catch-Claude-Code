@@ -2,13 +2,16 @@
 
 # Openclaw Catch Claude Code
 
-基于 Claude Code CLI 的多 agent 任务编排 harness，集成 OpenClaw 调度层。
+小模型指挥大模型干活 —— 让任意小模型（甚至本地模型）通过 OpenClaw 驱动 Claude Code CLI 完成复杂任务。
 
-> **OpenClaw 与 Claude Code CLI 之间缺失的编排层。**
-> 
-> OpenClaw 理解你的意图，Claude Code CLI 执行它。这个 harness 连接两者 --
-> 将任务路由到专职 CLI agent，每个 agent 拥有持久会话、隔离工作空间和完全自主权。
-> 支持任意 LLM 模型作为分类器（GPT、Claude、Gemini）。
+> **小马拉大车：用最低的成本，释放 Claude Code 的全部能力。**
+>
+> Anthropic 已限制 OpenClaw 使用 Claude 订阅，直接调 API 成本高昂。
+> 我们的方案：用任意便宜的小模型（GPT-mini、Gemini Flash、甚至本地 Ollama）做任务分类，
+> 真正的重活交给 Claude Code CLI（用户自己的 CLI 订阅）。
+> OpenClaw 只当秘书分发任务，CLI 是真正干活的工人 —— **大幅降低使用成本**。
+>
+> 这是一个为人类 AI 开源事业做出的努力。
 
 ## 架构
 
@@ -30,13 +33,26 @@ OpenClaw 对 Telegram 收到的消息进行分类，并附加 `[routing: agent]`
 
 ## 为什么做这个项目
 
+### 核心动机
+
+**Anthropic 限制了 OpenClaw 使用 Claude 订阅**，直接调 Claude API 成本很高。
+但 Claude Code CLI 是 Anthropic 的独立产品，用户付费订阅后可以正常使用。
+
+我们的做法：**让 OpenClaw 用便宜的小模型当秘书，把真正的活丢给 Claude Code CLI 干。**
+
+```
+传统方案（贵）：OpenClaw → Claude API（每次对话都消耗 API 额度）
+我们的方案（省）：OpenClaw（小模型分类）→ Claude Code CLI（用户自己的订阅）
+```
+
 | 问题 | 我们的方案 |
 |------|-----------|
-| OpenClaw 无法直接执行 shell 命令或编辑文件 | CLI agent 拥有完整系统访问权限来完成 |
-| 非 Claude 模型无法使用 MCP 工具 | 结构化输出路由完全绕过 MCP |
+| Claude API 成本高昂 | 小模型做分类（几乎免费），CLI 做执行（用户已有的订阅） |
+| Anthropic 限制 OpenClaw 用 Claude 订阅 | 我们用 CLI 而非 API，不受限制 |
+| 非 Claude 模型无法调用 MCP 工具 | 结构化输出路由，任意模型都能驱动 CLI |
+| OpenClaw 无法直接执行命令或编辑文件 | CLI agent 拥有完整系统访问权限 |
 | 单 CLI 会话瓶颈 | 3 个专职 agent 并行工作 |
-| 任务不可见 | 每个工作区中的 `.tasks/` 看板，可通过 API 查询 |
-| 一刀切的配置 | 每个 agent 独立的 `.claude/` 工作空间，自定义规则、hook、subagent |
+| 一刀切的配置 | 每个 agent 独立 `.claude/` 工作空间，完全自定义 |
 
 ## 核心功能
 
