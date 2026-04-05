@@ -13,6 +13,10 @@
 >
 > **怀着谦虚的心，为人类 AI 开源事业尽一份力。**
 
+<p align="center">
+  <img src="./picture.png" width="600" alt="Openclaw Catch Claude Code">
+</p>
+
 ### 核心动机
 
 Anthropic 限制了 OpenClaw 使用 Claude 订阅，对龙虾社区影响不小。
@@ -31,7 +35,7 @@ Anthropic 限制了 OpenClaw 使用 Claude 订阅，对龙虾社区影响不小�
 |------|-----------|
 | Claude API 成本高昂 | 小模型做分类（几乎免费），CLI 做执行（用户已有的订阅） |
 | Anthropic 限制 OpenClaw 用 Claude 订阅 | 我们用 CLI 而非 API，不受限制 |
-| 伪装 OAuth / 绕过认证有封号风险 | CLI 是用户自己正常订阅的产品，合规调用，零封号风险 |
+| 伪装 OAuth / 绕过认证——必然被封号 | CLI 是用户自己正常订阅的产品，合规调用，零封号风险 |
 | 非 Claude 模型无法调用 MCP 工具 | 结构化输出路由，任意模型都能驱动 CLI |
 | OpenClaw 无法直接执行命令或编辑文件 | CLI agent 拥有完整系统访问权限 |
 | 单 CLI 会话瓶颈 | 3 个专职 agent 并行工作 |
@@ -47,26 +51,46 @@ Anthropic 限制了 OpenClaw 使用 Claude 订阅，对龙虾社区影响不小�
 - **完全自定义你的龙虾** -- OpenClaw 的 SOUL.md、AGENTS.md、BOOTSTRAP.md、Skill、Hook 全部开放自定义，打造你自己的 AI 助手人格和工作流
 - **会话持久化** -- 原子写入 + schema 校验 + token 用量追踪
 - **138 个测试，零外部依赖** -- 仅使用 Node.js 18+ 内置 API
+- **0封号风险**
 
-
-
-## 架构
+## 项目结构
 
 ```
-User (Telegram) --> OpenClaw (classifier) --> [routing: agent] tag
-                                                    |
-                                          message:sent hook
-                                                    |
-                                          Harness (Node.js) --> CLI Pool
-                                                    |
-                              +----------+----------+----------+
-                              | general  |   code   | complex  |
-                              |   CLI    |   CLI    |   CLI    |
-                              +----------+----------+----------+
+server.js                     -- 入口文件（委托给 src/server.js）
+src/
+  server.js                   -- HTTP 服务、路由分派、认证、CORS
+  routes/
+    cli.js                    -- CLI 池端点（/cli/*）
+    task.js                   -- 任务管理端点（/task/*、/tasks/*、/lead/*）
+    session.js                -- 命名会话端点（/session/*）
+    claude.js                 -- Claude CLI 端点（/connect、/sessions、/resume 等）
+    tools.js                  -- 直接工具端点（/bash、/read、/call、/batch-read）
+  lib/
+    cli-pool.js               -- 多 CLI 池（general/code/complex）
+    claude-runner.js           -- Claude CLI 进程管理、SSE 流式输出、并发控制
+    session-store.js           -- 会话持久化（原子写入、schema 校验）
+    task-store.js              -- 任务状态持久化
+    helpers.js                 -- JSON 响应、请求体解析、CLI 参数构建
+    logger.js                  -- 结构化日志（受 LOG_LEVEL 控制）
+openclaw/
+  docker-compose.yml           -- OpenClaw 部署配置
+  openclaw.json.example        -- OpenClaw 配置示例
+  AGENTS.md                    -- Agent 角色定义
+  SKILL.md                     -- 技能配置
+  BOOTSTRAP.md                 -- 初始化引导流程
+  hooks/cli-router/            -- 消息路由 hook
+  mcp/                         -- HTTP-to-CLI 桥接配置
+  claude_setting_example/      -- 3 个 agent 的 .claude/ 配置示例
+test/
+  helpers.test.js              -- helper 工具函数单元测试
+  server.test.js               -- HTTP 端点集成测试
+  lead-agent.test.js           -- Lead agent / 任务路由测试
+  cli-pool.test.js             -- CLI 池测试
+  fake-claude.js               -- 用于测试的 Claude CLI mock
+docs/
+  openapi.yaml                 -- OpenAPI 3.0 规范
+  cron-guide.md                -- 定时任务指南
 ```
-
-OpenClaw 对 Telegram 收到的消息进行分类，并附加 `[routing: agent]` 标签。
-`message:sent` hook 将带标签的消息转发到本 harness，由 harness 分派给 CLI agent 池中对应的 agent。
 
 ## 快速开始
 
@@ -214,45 +238,6 @@ OpenClaw 内置的 cron 调度器支持三种调度模式：
 
 **模型只负责分类。CLI 完成所有实际工作。**
 
-## 项目结构
-
-```
-server.js                     -- 入口文件（委托给 src/server.js）
-src/
-  server.js                   -- HTTP 服务、路由分派、认证、CORS
-  routes/
-    cli.js                    -- CLI 池端点（/cli/*）
-    task.js                   -- 任务管理端点（/task/*、/tasks/*、/lead/*）
-    session.js                -- 命名会话端点（/session/*）
-    claude.js                 -- Claude CLI 端点（/connect、/sessions、/resume 等）
-    tools.js                  -- 直接工具端点（/bash、/read、/call、/batch-read）
-  lib/
-    cli-pool.js               -- 多 CLI 池（general/code/complex）
-    claude-runner.js           -- Claude CLI 进程管理、SSE 流式输出、并发控制
-    session-store.js           -- 会话持久化（原子写入、schema 校验）
-    task-store.js              -- 任务状态持久化
-    helpers.js                 -- JSON 响应、请求体解析、CLI 参数构建
-    logger.js                  -- 结构化日志（受 LOG_LEVEL 控制）
-openclaw/
-  docker-compose.yml           -- OpenClaw 部署配置
-  openclaw.json.example        -- OpenClaw 配置示例
-  AGENTS.md                    -- Agent 角色定义
-  SKILL.md                     -- 技能配置
-  BOOTSTRAP.md                 -- 初始化引导流程
-  hooks/cli-router/            -- 消息路由 hook
-  mcp/                         -- HTTP-to-CLI 桥接配置
-  claude_setting_example/      -- 3 个 agent 的 .claude/ 配置示例
-test/
-  helpers.test.js              -- helper 工具函数单元测试
-  server.test.js               -- HTTP 端点集成测试
-  lead-agent.test.js           -- Lead agent / 任务路由测试
-  cli-pool.test.js             -- CLI 池测试
-  fake-claude.js               -- 用于测试的 Claude CLI mock
-docs/
-  openapi.yaml                 -- OpenAPI 3.0 规范
-  cron-guide.md                -- 定时任务指南
-```
-
 ## 测试
 
 ```bash
@@ -261,6 +246,14 @@ npm test
 
 共 138 个测试。使用 Node.js 内置测试运行器（`node --test`）。内含 Claude CLI mock（`test/fake-claude.js`），无需真实 Claude 环境即可运行测试。
 
+## 致谢
+
+- [OpenClaw](https://github.com/openclaw/openclaw) —— 让 AI agent 走进每个人生活的开源项目
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) —— Anthropic 出品的强大编码 CLI
+- 所有为 AI 开源生态贡献力量的开发者们
+
 ## 许可证
 
-MIT
+[MIT](LICENSE) —— 自由使用、修改和分发。
+
+如果这个项目对你有帮助，欢迎 star 支持，或提交 PR 一起完善。
