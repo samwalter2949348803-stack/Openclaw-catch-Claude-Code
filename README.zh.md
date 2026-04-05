@@ -4,7 +4,7 @@
 
 **龙虾与Claude握手了 —— 小模型指挥大模型干活。**
 
-> **小马拉大车：用最低成本，释放 Claude Code 的全部能力。**
+> **小马拉大车：用最低成本，释放openclaw和 Claude Code 的全部能力。**
 >
 > **Anthropic 已限制 OpenClaw 直接使用 Claude 订阅，调 API 成本高昂。**
 > **我们的方案：让任意便宜的小模型（GPT-mini、Gemini Flash、甚至本地 Ollama）**
