@@ -1,53 +1,54 @@
 # Openclaw Catch Claude Code
 
-HTTP-to-CLI bridge for programmatic control of Claude Code sessions.
+Multi-agent task orchestration harness for Claude Code CLI, with OpenClaw integration.
 
 ## Architecture
 
 ```
-Caller (Bot / API / CLI)
-        |
-        v
-  HTTP Server (server.js)  ---- Bearer token auth (optional)
-        |
-        v
-  spawn claude -p [args]   ---- Claude Code CLI
-        |
-        v
-  Session Store             ---- ~/.claude/session-store.json
-  (atomic write + schema validation)
+User (Telegram) --> OpenClaw (classifier) --> [routing: agent] tag
+                                                    |
+                                          message:sent hook
+                                                    |
+                                          Harness (Node.js) --> CLI Pool
+                                                    |
+                              +----------+----------+----------+
+                              | general  |   code   | complex  |
+                              |   CLI    |   CLI    |   CLI    |
+                              +----------+----------+----------+
 ```
 
-## Features
+OpenClaw classifies incoming Telegram messages and attaches a `[routing: agent]` tag.
+A `message:sent` hook forwards the tagged message to this harness, which dispatches it
+to the appropriate CLI agent in the pool.
 
-- Multi-turn session management (create, resume, stop, restart)
-- SSE streaming output with heartbeat to prevent proxy timeouts
-- Session persistence via atomic write-to-temp-then-rename with schema validation
-- Token usage tracking (input/output tokens per session)
-- Conversation history replay from JSONL files with pagination
-- Bearer token authentication (optional, via `AUTH_TOKEN`)
-- Structured logging with configurable log level (`LOG_LEVEL`)
-- Bash execution security controls (disable switch, command whitelist, hardcoded blacklist)
-- Concurrent process limiting (`MAX_CONCURRENT`)
-- Per-session request locking (prevents concurrent writes to the same session)
-- Zero external dependencies -- Node.js 18+ built-in APIs only
+## Core Features
+
+- **Multi-CLI pool** -- 3 specialized agents (general / code / complex), each a long-running Claude Code CLI process
+- **Per-agent workspaces** -- `.cli-workspaces/{name}/` with full `.claude/` customization (CLAUDE.md, settings.json, rules, subagents)
+- **Structured output routing** -- `[routing: general|code|complex]` tags drive automatic dispatch
+- **OpenClaw integration** -- HTTP-to-CLI bridge + Telegram via OpenClaw hooks
+- **Scheduled tasks** -- Cron, interval, and one-shot scheduling through OpenClaw's built-in scheduler
+- **Session persistence** -- Atomic JSON writes with schema validation, token usage tracking per session
+- **Structured logging** -- Configurable log levels (DEBUG / INFO / WARN / ERROR)
+- **138 tests, zero external dependencies** -- Node.js 18+ built-in APIs only
+- **GitHub Actions CI** -- Automated test runs on push
 
 ## Quick Start
-
-```bash
-git clone https://github.com/samwalter2949348803-stack/Openclaw-catch-Claude-Code.git
-cd Openclaw-catch-Claude-Code
-node server.js
-# or
-npm start
-```
-
-The server starts on `http://127.0.0.1:18795` by default (localhost only).
 
 ### Prerequisites
 
 - Node.js 18+
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated
+
+### Install and run
+
+```bash
+git clone https://github.com/samwalter2949348803-stack/Openclaw-catch-Claude-Code.git
+cd Openclaw-catch-Claude-Code
+node server.js
+```
+
+The server starts on `http://127.0.0.1:18795` (localhost only).
 
 ### Environment Variables
 
@@ -55,129 +56,154 @@ The server starts on `http://127.0.0.1:18795` by default (localhost only).
 |---|---|---|
 | `PORT` | `18795` | HTTP server port |
 | `CLAUDE_BIN` | `claude` | Path to the Claude Code CLI binary |
-| `DEFAULT_CWD` | `/root` | Default working directory for Claude CLI processes |
-| `CLAUDE_SESSIONS_DIR` | `~/.claude/projects/<cwd-slug>` | Directory where Claude stores JSONL session files |
-| `AUTH_TOKEN` | *(empty)* | When set, all endpoints (except `/health`) require `Authorization: Bearer <token>` |
-| `MAX_CONCURRENT` | `3` | Maximum number of concurrent Claude CLI processes |
+| `DEFAULT_CWD` | `/root` | Default working directory for CLI processes |
+| `AUTH_TOKEN` | *(empty)* | When set, all prefixed endpoints require `Authorization: Bearer <token>` |
+| `MAX_CONCURRENT` | `3` | Maximum concurrent Claude CLI processes |
 | `LOG_LEVEL` | `INFO` | Minimum log level: `DEBUG`, `INFO`, `WARN`, `ERROR` |
-| `BASH_DISABLED` | *(empty)* | Set to `true` to disable the `/bash` endpoint entirely (returns 403) |
-| `BASH_ALLOWED_COMMANDS` | *(empty)* | Comma-separated whitelist of allowed command names (e.g. `ls,cat,grep`) |
+| `LEAD_TIMEOUT` | `300` | Default CLI send timeout in seconds |
+| `BASH_DISABLED` | *(empty)* | Set `true` to disable the `/bash` endpoint (returns 403) |
+| `BASH_ALLOWED_COMMANDS` | *(empty)* | Comma-separated whitelist of allowed commands (e.g. `ls,cat,grep`) |
 
 ## API Endpoints
 
 All endpoints (except `/health`) are prefixed with `/backend-api/claude-code`.
 
-For example: `POST http://localhost:18795/backend-api/claude-code/session/start`
+Example: `POST http://localhost:18795/backend-api/claude-code/cli/send`
 
-### Health and Connection
+### Health
 
-| Method | Endpoint | Description | Status |
-|---|---|---|---|
-| `GET` | `/health` | Server uptime, active sessions, process count (no prefix, no auth) | done |
-| `POST` | `/connect` | Check connectivity, returns tool count | done |
-| `POST` | `/disconnect` | Signal client disconnect (no-op) | done |
-| `GET` | `/tools` | List available Claude Code tools | done |
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/health` | Server uptime, active sessions, process count (no prefix, no auth) |
 
-### Claude CLI Sessions
+### CLI Management
 
-| Method | Endpoint | Description | Status |
-|---|---|---|---|
-| `GET` | `/sessions` | List JSONL session files from disk | done |
-| `POST` | `/resume` | Resume a Claude session by session ID | done |
-| `POST` | `/continue` | Continue the most recent Claude session | done |
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/cli/start` | Start a named CLI session (general / code / complex) |
+| `POST` | `/cli/send` | Send a message to a named CLI (lazy-starts if not running) |
+| `POST` | `/cli/stop` | Stop a named CLI session |
+| `GET` | `/cli/list` | List all CLI sessions in the pool |
+| `GET` | `/cli/:name/status` | Get status of a specific CLI session |
 
-### Named Session Management
+### Task Management
 
-| Method | Endpoint | Description | Status |
-|---|---|---|---|
-| `POST` | `/session/start` | Create a named session (spawns Claude, stores session ID) | done |
-| `POST` | `/session/send` | Send a message to a named session, wait for response | done |
-| `POST` | `/session/send-stream` | Send a message with SSE streaming output | done |
-| `GET` | `/session/list` | List all active named sessions | done |
-| `POST` | `/session/stop` | Remove a named session | done |
-| `POST` | `/session/status` | Get session details, token usage, uptime | done |
-| `POST` | `/session/restart` | Restart a failed/stale session | done |
-| `POST` | `/session/history` | Get conversation history with pagination | done |
-| `POST` | `/session/pause` | Pause a session | stub (501) |
-| `POST` | `/session/resume` | Resume a paused session | stub (501) |
-| `POST` | `/session/fork` | Fork a session | stub (501) |
-| `POST` | `/session/search` | Search session history | stub (501) |
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/task/submit` | Submit a task to the lead agent |
+| `GET` | `/task/:taskId/status` | Get task status by ID |
+| `GET` | `/tasks/list` | List all tasks |
+| `POST` | `/task/:taskId/cancel` | Cancel a running task |
+| `POST` | `/lead/restart` | Restart the lead agent |
+| `GET` | `/lead/status` | Get lead agent status |
 
-### Direct Tool Execution
+### Session Management
 
-| Method | Endpoint | Description | Status |
-|---|---|---|---|
-| `POST` | `/bash` | Execute a shell command (with security controls) | done |
-| `POST` | `/read` | Read a file from disk | done |
-| `POST` | `/call` | Execute Glob, Grep, or Read directly | done |
-| `POST` | `/batch-read` | Batch read files by glob patterns | done |
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/session/start` | Create a named session (spawns Claude, stores session ID) |
+| `POST` | `/session/send` | Send a message to a named session |
+| `POST` | `/session/send-stream` | Send a message with SSE streaming output |
+| `GET` | `/session/list` | List all active named sessions |
+| `POST` | `/session/stop` | Remove a named session |
+| `POST` | `/session/status` | Get session details, token usage, uptime |
+| `POST` | `/session/restart` | Restart a failed/stale session |
+| `POST` | `/session/history` | Get conversation history with pagination |
 
-## CLI Tool
+### Tools
 
-The `openclaw-claude-code-skill/` subdirectory contains a companion CLI that talks to this server. It provides commands like `session-start`, `session-send`, `session-stop`, etc., suitable for use as an OpenClaw agent skill.
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/bash` | Execute a shell command (with security controls) |
+| `POST` | `/read` | Read a file from disk |
+| `POST` | `/call` | Execute Glob, Grep, or Read directly |
+| `POST` | `/batch-read` | Batch read files by glob patterns |
+| `GET` | `/tools` | List available Claude Code tools |
 
-```bash
-cd openclaw-claude-code-skill
-npm install
-npm run build
-npm link          # makes `claude-code-skill` available globally
+### Connection
 
-claude-code-skill connect
-claude-code-skill session-start myproject -d /path/to/project
-claude-code-skill session-send myproject "explain this codebase"
-claude-code-skill session-stop myproject
-```
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/connect` | Check connectivity, returns tool count |
+| `POST` | `/disconnect` | Signal client disconnect |
+| `GET` | `/sessions` | List JSONL session files from disk |
+| `POST` | `/resume` | Resume a Claude session by session ID |
+| `POST` | `/continue` | Continue the most recent Claude session |
 
-See [`openclaw-claude-code-skill/README.md`](openclaw-claude-code-skill/README.md) for full documentation.
+## CLI Agent Workspaces
 
-## Security
+Each CLI agent (general, code, complex) can have a dedicated workspace at `.cli-workspaces/{name}/`.
+When a CLI starts, the harness checks for this directory and uses it as the working directory automatically.
 
-### Authentication
+A workspace can contain:
 
-Set the `AUTH_TOKEN` environment variable to require Bearer token authentication on all prefixed endpoints. The `/health` endpoint is always public.
+- `CLAUDE.md` -- Agent-specific project instructions
+- `.claude/settings.json` -- Local settings and hooks
+- `.claude/rules/` -- Additional rule files
+- `.claude/agents/` -- Subagent definitions
 
-```bash
-AUTH_TOKEN=my-secret-token node server.js
-```
+See [`openclaw/claude_setting_example/README.md`](openclaw/claude_setting_example/README.md) for full examples of all three agent configurations.
 
-Clients must include `Authorization: Bearer my-secret-token` in every request.
+## OpenClaw Integration
 
-### Bash Endpoint Controls
+OpenClaw is the external orchestration layer that connects Telegram users to this harness.
 
-The `/bash` endpoint has three layers of protection:
+- **Hooks** -- The `message:sent` hook in `openclaw/hooks/cli-router/` intercepts messages tagged with `[routing: agent]` and forwards them to the appropriate CLI endpoint
+- **Telegram** -- Users interact via Telegram; OpenClaw classifies messages and tags them for routing
+- **Configuration** -- See `openclaw/docker-compose.yml` and `openclaw/openclaw.json.example` for deployment setup
+- **Agent roles** -- See `openclaw/AGENTS.md` for agent role definitions
+- **Skills** -- See `openclaw/SKILL.md` for skill configuration
+- **Bootstrap** -- See `openclaw/BOOTSTRAP.md` for initial setup sequence
 
-1. **Kill switch** -- Set `BASH_DISABLED=true` to disable it entirely (returns 403).
-2. **Hardcoded blacklist** -- Commands matching destructive patterns (`rm -rf /`, `mkfs`, `dd if=/dev`, fork bomb) are always blocked.
-3. **Command whitelist** -- Set `BASH_ALLOWED_COMMANDS=ls,cat,grep` to restrict which executables can be invoked. Only the first token (command name) is checked.
+## Scheduled Tasks
 
-### Network Binding
+OpenClaw's built-in cron scheduler supports three scheduling modes:
 
-The server binds to `127.0.0.1` only. It is not accessible from external networks unless you explicitly proxy it.
+- **Cron expressions** -- `--cron "0 10 * * *"` for precise timing
+- **Fixed intervals** -- `--every "30m"` for periodic checks
+- **One-shot** -- `--at "5m"` for delayed execution
+
+Results can be pushed to Telegram. Messages containing `[routing: xxx]` tags are automatically dispatched to the corresponding CLI agent.
+
+See [`openclaw/cron-guide.md`](openclaw/cron-guide.md) for the full configuration guide.
 
 ## Project Structure
 
 ```
-server.js                  -- Entry point (delegates to src/server.js)
+server.js                     -- Entry point (delegates to src/server.js)
 src/
-  server.js                -- HTTP server, route dispatch, auth, CORS
+  server.js                   -- HTTP server, route dispatch, auth, CORS
   routes/
-    session.js             -- Named session endpoints (/session/*)
-    claude.js              -- Claude CLI endpoints (/connect, /sessions, /resume, etc.)
-    tools.js               -- Direct tool endpoints (/bash, /read, /call, /batch-read)
+    cli.js                    -- CLI pool endpoints (/cli/*)
+    task.js                   -- Task management endpoints (/task/*, /tasks/*, /lead/*)
+    session.js                -- Named session endpoints (/session/*)
+    claude.js                 -- Claude CLI endpoints (/connect, /sessions, /resume, etc.)
+    tools.js                  -- Direct tool endpoints (/bash, /read, /call, /batch-read)
   lib/
-    claude-runner.js       -- Claude CLI process spawning, SSE streaming, concurrency
-    session-store.js       -- Session persistence (JSON file, atomic writes, schema validation)
-    helpers.js             -- JSON response, body parsing, CLI arg builder
-    logger.js              -- Structured logger (LOG_LEVEL controlled)
+    cli-pool.js               -- Multi-CLI pool (general/code/complex)
+    claude-runner.js           -- Claude CLI process spawning, SSE streaming, concurrency
+    session-store.js           -- Session persistence (atomic writes, schema validation)
+    task-store.js              -- Task state persistence
+    helpers.js                 -- JSON response, body parsing, CLI arg builder
+    logger.js                  -- Structured logger (LOG_LEVEL controlled)
+openclaw/
+  docker-compose.yml           -- OpenClaw deployment config
+  openclaw.json.example        -- OpenClaw configuration example
+  AGENTS.md                    -- Agent role definitions
+  SKILL.md                     -- Skill configuration
+  BOOTSTRAP.md                 -- Initial setup sequence
+  hooks/cli-router/            -- Message routing hook
+  mcp/                         -- HTTP-to-CLI bridge config
+  claude_setting_example/      -- Example .claude/ configs for all 3 agents
 test/
-  helpers.test.js          -- Unit tests for helper utilities
-  server.test.js           -- Integration tests for HTTP endpoints
-  fake-claude.js           -- Mock Claude CLI for testing
+  helpers.test.js              -- Unit tests for helper utilities
+  server.test.js               -- Integration tests for HTTP endpoints
+  lead-agent.test.js           -- Lead agent / task routing tests
+  cli-pool.test.js             -- CLI pool tests
+  fake-claude.js               -- Mock Claude CLI for testing
 docs/
-  openapi.yaml             -- OpenAPI 3.0 specification
-  development-plan.md      -- Development roadmap
-openclaw-claude-code-skill/  -- Companion CLI tool (TypeScript)
-examples/                  -- Usage examples
+  openapi.yaml                 -- OpenAPI 3.0 specification
+  cron-guide.md                -- Scheduled tasks guide
 ```
 
 ## Testing
@@ -186,11 +212,7 @@ examples/                  -- Usage examples
 npm test
 ```
 
-Tests use the Node.js built-in test runner (`node --test`). A fake Claude CLI script is included in `test/` to allow testing without a real Claude installation.
-
-## API Documentation
-
-Full OpenAPI 3.0 specification is available at [`docs/openapi.yaml`](docs/openapi.yaml).
+138 tests. Uses the Node.js built-in test runner (`node --test`). A mock Claude CLI (`test/fake-claude.js`) is included so tests run without a real Claude installation.
 
 ## License
 

@@ -2,6 +2,9 @@
 .claude/
 CLAUDE.md
 
+# Internal docs (dev plans, analysis — not for distribution)
+docs/
+
 # Dependencies
 node_modules/
 
@@ -19,3 +22,7 @@ Thumbs.db
 
 # Session store
 session-store.json
+
+# Runtime directories
+.cli-workspaces/
+.tasks/

@@ -5,7 +5,7 @@
 
 set -euo pipefail
 
-PASS="${1:-${MACMINI_PASS:-Nexft666}}"
+PASS="${1:-${MACMINI_PASS:?请通过参数或 MACMINI_PASS 环境变量传入密码}}"
 HOST="Nexft-bot@Nexft-botdeMac-mini.local"
 SSH="ssh -o UserKnownHostsFile=$HOME/.ssh/known_hosts -i $HOME/.ssh/id_ed25519 -o ConnectTimeout=10"
 BREW='eval "$(/opt/homebrew/bin/brew shellenv zsh)"'
