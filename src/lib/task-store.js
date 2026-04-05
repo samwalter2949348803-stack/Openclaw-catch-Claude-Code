@@ -1,105 +1,107 @@
 /**
  * Task file read/write utilities.
  *
- * Tasks are stored as JSON files in the .tasks/ directory:
- *   .tasks/task_{id}.json
+ * Each CLI agent stores tasks in its own workspace:
+ *   .cli-workspaces/{agent}/.tasks/task_{id}.json
  *
- * Pure file operations — no Lead Agent interaction.
+ * readTask and listTasks scan all agent workspaces.
+ * Pure file operations — no CLI interaction.
  * Zero external dependencies — Node.js built-in APIs only.
  */
 
-import { readFile, readdir, mkdir } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { log } from './logger.js';
 
-const TASKS_DIR = process.env.TASKS_DIR || path.resolve(process.cwd(), '.tasks');
+const CLI_WORKSPACES_DIR = process.env.CLI_WORKSPACES_DIR || path.resolve(process.cwd(), '.cli-workspaces');
+const LEGACY_TASKS_DIR = process.env.TASKS_DIR || null;
+const AGENT_NAMES = ['general', 'code', 'complex'];
 
 /**
- * Ensure the .tasks/ directory exists.
+ * Get all .tasks/ directories across agent workspaces.
+ * Also includes legacy TASKS_DIR if set (backward compat for tests).
+ * @returns {string[]}
  */
-async function ensureTasksDir() {
-  try {
-    await mkdir(TASKS_DIR, { recursive: true });
-  } catch (err) {
-    log('ERROR', 'task-store', 'Failed to create tasks directory', {
-      dir: TASKS_DIR,
-      error: err.message,
-    });
+function getTasksDirs() {
+  const dirs = AGENT_NAMES.map((name) => path.join(CLI_WORKSPACES_DIR, name, '.tasks'));
+  if (LEGACY_TASKS_DIR) {
+    dirs.push(LEGACY_TASKS_DIR);
   }
+  return dirs;
 }
 
 /**
  * Read a single task file by ID.
+ * Searches all agent workspaces.
  *
  * @param {string} taskId - The task identifier (without "task_" prefix or ".json" suffix)
  * @returns {Promise<object|null>} Parsed task object, or null if not found
  */
 export async function readTask(taskId) {
-  const filePath = path.join(TASKS_DIR, `task_${taskId}.json`);
-  try {
-    const raw = await readFile(filePath, 'utf-8');
-    return JSON.parse(raw);
-  } catch (err) {
-    if (err.code === 'ENOENT') {
-      log('DEBUG', 'task-store', 'Task file not found', { taskId, filePath });
-      return null;
+  for (const dir of getTasksDirs()) {
+    const filePath = path.join(dir, `task_${taskId}.json`);
+    try {
+      const raw = await readFile(filePath, 'utf-8');
+      return JSON.parse(raw);
+    } catch (err) {
+      if (err.code !== 'ENOENT') {
+        log('ERROR', 'task-store', 'Failed to read task file', {
+          taskId,
+          filePath,
+          error: err.message,
+        });
+      }
     }
-    log('ERROR', 'task-store', 'Failed to read task file', {
-      taskId,
-      filePath,
-      error: err.message,
-    });
-    return null;
   }
+  log('DEBUG', 'task-store', 'Task file not found in any workspace', { taskId });
+  return null;
 }
 
 /**
- * List all tasks in the .tasks/ directory.
- *
- * Reads every task_*.json file, parses it, and returns an array
- * of summary objects: { id, title, status, assignee, updated }.
+ * List all tasks across all agent workspaces.
  *
  * @returns {Promise<object[]>} Array of task summaries
  */
 export async function listTasks() {
-  await ensureTasksDir();
-
-  let files;
-  try {
-    files = await readdir(TASKS_DIR);
-  } catch (err) {
-    if (err.code === 'ENOENT') {
-      return [];
-    }
-    log('ERROR', 'task-store', 'Failed to read tasks directory', {
-      dir: TASKS_DIR,
-      error: err.message,
-    });
-    return [];
-  }
-
-  const jsonFiles = files.filter(
-    (f) => f.startsWith('task_') && f.endsWith('.json')
-  );
-
   const tasks = [];
-  for (const file of jsonFiles) {
-    const filePath = path.join(TASKS_DIR, file);
+
+  for (const dir of getTasksDirs()) {
+    const agentName = path.basename(path.dirname(dir));
+    let files;
     try {
-      const raw = await readFile(filePath, 'utf-8');
-      const data = JSON.parse(raw);
-      tasks.push({
-        id: data.id || file.replace(/^task_/, '').replace(/\.json$/, ''),
-        title: data.title || null,
-        status: data.status || 'unknown',
-        assignee: data.assignee || null,
-        updated: data.updated || data.updatedAt || null,
-      });
+      files = await readdir(dir);
     } catch (err) {
-      log('WARN', 'task-store', 'Failed to parse task file', {
-        file,
+      if (err.code === 'ENOENT') continue;
+      log('ERROR', 'task-store', 'Failed to read tasks directory', {
+        dir,
         error: err.message,
       });
+      continue;
+    }
+
+    const jsonFiles = files.filter(
+      (f) => f.startsWith('task_') && f.endsWith('.json')
+    );
+
+    for (const file of jsonFiles) {
+      const filePath = path.join(dir, file);
+      try {
+        const raw = await readFile(filePath, 'utf-8');
+        const data = JSON.parse(raw);
+        tasks.push({
+          id: data.id || file.replace(/^task_/, '').replace(/\.json$/, ''),
+          title: data.title || null,
+          status: data.status || 'unknown',
+          assignee: data.assignee || agentName,
+          updated: data.updated || data.updatedAt || null,
+          workspace: agentName,
+        });
+      } catch (err) {
+        log('WARN', 'task-store', 'Failed to parse task file', {
+          file,
+          error: err.message,
+        });
+      }
     }
   }
 
@@ -107,11 +109,9 @@ export async function listTasks() {
 }
 
 /**
- * Get the resolved tasks directory path.
- * Useful for callers that need to know where tasks are stored.
- *
+ * Get the resolved workspaces directory path.
  * @returns {string}
  */
 export function getTasksDir() {
-  return TASKS_DIR;
+  return CLI_WORKSPACES_DIR;
 }
