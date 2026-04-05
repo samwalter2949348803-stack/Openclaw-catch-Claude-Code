@@ -75,11 +75,9 @@ export async function startLeadAgent(options) {
     promptLength: systemPrompt.length,
   });
 
-  // Build args: claude -p "<system prompt>" --output-format json --cwd <cwd>
+  // Build args: claude -p "<system prompt>" --output-format json
+  // Note: working directory is set via spawn's cwd option, not CLI flag
   const args = ['-p', systemPrompt, '--output-format', 'json'];
-  if (cwd) {
-    args.push('--cwd', cwd);
-  }
 
   // Spawn the initial session using a raw spawn so we can:
   //   1. Capture the full JSON output to extract session_id
