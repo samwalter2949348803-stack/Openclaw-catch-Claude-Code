@@ -46,6 +46,15 @@ import {
   handleHealth,
 } from './routes/claude.js';
 
+import {
+  handleTaskSubmit,
+  handleTaskStatus,
+  handleTasksList,
+  handleTaskCancel,
+  handleLeadRestart,
+  handleLeadStatus,
+} from './routes/task.js';
+
 // ── Configuration ───────────────────────────────────────────────────────
 
 const PORT = parseInt(process.env.PORT || '18795');
@@ -82,7 +91,48 @@ const routes = {
   'POST /read':                handleRead,
   'POST /call':                handleCall,
   'POST /batch-read':          handleBatchRead,
+  'POST /task/submit':         handleTaskSubmit,
+  'GET /tasks/list':           handleTasksList,
+  'POST /lead/restart':        handleLeadRestart,
+  'GET /lead/status':          handleLeadStatus,
 };
+
+// ── Parameterized route patterns ────────────────────────────────────────
+// Routes with dynamic segments that cannot be represented in the exact-match
+// dispatch table above. Checked in order when no exact match is found.
+
+const paramRoutes = [
+  {
+    method: 'GET',
+    pattern: /^\/task\/([^/]+)\/status$/,
+    handler: handleTaskStatus,
+    paramName: 'taskId',
+  },
+  {
+    method: 'POST',
+    pattern: /^\/task\/([^/]+)\/cancel$/,
+    handler: handleTaskCancel,
+    paramName: 'taskId',
+  },
+];
+
+/**
+ * Attempt to match a parameterized route.
+ * Returns { handler, params } or null.
+ */
+function matchParamRoute(method, route) {
+  for (const entry of paramRoutes) {
+    if (entry.method !== method) continue;
+    const match = route.match(entry.pattern);
+    if (match) {
+      return {
+        handler: entry.handler,
+        params: { [entry.paramName]: match[1] },
+      };
+    }
+  }
+  return null;
+}
 
 // ── HTTP Server ─────────────────────────────────────────────────────────
 
@@ -127,12 +177,21 @@ const server = http.createServer(async (req, res) => {
   try {
     const body = method === 'POST' ? await parseBody(req) : {};
 
+    // 1. Try exact-match dispatch table
     const key = `${method} ${route}`;
     const handler = routes[key];
     if (handler) {
       await handler(body, req, res);
     } else {
-      json(res, { ok: false, error: `Unknown route: ${method} ${route}`, code: 'NOT_FOUND' }, 404);
+      // 2. Try parameterized route patterns
+      const paramMatch = matchParamRoute(method, route);
+      if (paramMatch) {
+        // Attach extracted params to req so handlers can read them
+        req.params = paramMatch.params;
+        await paramMatch.handler(body, req, res);
+      } else {
+        json(res, { ok: false, error: `Unknown route: ${method} ${route}`, code: 'NOT_FOUND' }, 404);
+      }
     }
 
     log('INFO', 'server', `${method} ${route} completed`, { ms: Date.now() - t0 });
