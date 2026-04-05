@@ -59,13 +59,6 @@ function validateCliName(name, res) {
 }
 
 /**
- * Resolve the system prompt path for a given CLI name.
- */
-function getSystemPromptPath(name) {
-  return path.resolve(process.cwd(), '.agents', name, 'system.md');
-}
-
-/**
  * Resolve the default cwd for a given CLI name.
  * If a dedicated workspace directory exists at .cli-workspaces/{name}/,
  * use it; otherwise fall back to DEFAULT_CWD.
@@ -96,14 +89,12 @@ export async function handleCliStart(body, req, res) {
 
   if (validateCliName(name, res)) return;
 
-  const systemPromptPath = getSystemPromptPath(name);
   const resolvedCwd = cwd || getDefaultCwd(name);
 
   log('INFO', COMPONENT, 'CLI start requested', { name, cwd: resolvedCwd });
 
   try {
     const result = await startCli(name, {
-      systemPromptPath,
       cwd: resolvedCwd,
       onExit: (exitCode, signal) => {
         log('WARN', COMPONENT, 'CLI session exited', {
@@ -164,12 +155,10 @@ export async function handleCliSend(body, req, res) {
   if (!existing || existing.status === 'stopped') {
     log('INFO', COMPONENT, 'CLI not active, lazy-starting before send', { name });
 
-    const systemPromptPath = getSystemPromptPath(name);
     const resolvedCwd = getDefaultCwd(name);
 
     try {
       await startCli(name, {
-        systemPromptPath,
         cwd: resolvedCwd,
         onExit: (exitCode, signal) => {
           log('WARN', COMPONENT, 'CLI session exited (lazy-started)', {

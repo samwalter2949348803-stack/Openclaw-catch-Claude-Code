@@ -13,7 +13,6 @@
  * Zero external dependencies — Node.js built-in APIs only.
  */
 
-import path from 'node:path';
 import { json } from '../lib/helpers.js';
 import {
   startCli,
@@ -26,7 +25,6 @@ import { readTask, listTasks } from '../lib/task-store.js';
 import { log } from '../lib/logger.js';
 
 const DEFAULT_CWD = process.env.DEFAULT_CWD || '/root';
-const SYSTEM_PROMPT_PATH = path.resolve(process.cwd(), '.agents', 'general', 'system.md');
 const DEFAULT_LEAD_TIMEOUT = parseInt(process.env.LEAD_TIMEOUT || '300', 10) * 1000;
 
 // ── P7-1: Module-level crash info ──────────────────────────────────────
@@ -107,13 +105,11 @@ export async function handleTaskSubmit(body, req, res) {
   // Lazy-initialize general CLI if not alive
   if (!isGeneralAlive()) {
     log('INFO', 'task', 'General CLI not alive, initializing before submit', {
-      systemPromptPath: SYSTEM_PROMPT_PATH,
       cwd: taskCwd,
     });
 
     try {
       await startCli('general', {
-        systemPromptPath: SYSTEM_PROMPT_PATH,
         cwd: taskCwd,
         onExit: (exitCode, signal) => {
           // P7-1: Record crash info on unexpected exit
@@ -331,7 +327,6 @@ export async function handleLeadRestart(body, req, res) {
 
   try {
     const result = await startCli('general', {
-      systemPromptPath: SYSTEM_PROMPT_PATH,
       cwd: taskCwd,
       onExit: (exitCode, signal) => {
         log('ERROR', 'task', 'General CLI exited unexpectedly (after restart)', {

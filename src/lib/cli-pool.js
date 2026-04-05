@@ -34,13 +34,16 @@ const pool = new Map();
  * Start a new named CLI session (or return the existing one if already
  * running).
  *
- * Reads the system prompt from `options.systemPromptPath`, spawns the
- * Claude CLI with that prompt, extracts the session_id from the JSON
- * output, and stores the session in the pool.
+ * If `options.systemPromptPath` is provided, reads the system prompt from
+ * that file and injects it via `-p` (backward-compatible behavior).
+ *
+ * If `options.systemPromptPath` is omitted, the CLI is started with a
+ * minimal bootstrap prompt, relying on the CLAUDE.md in the working
+ * directory (cwd) for its instructions.
  *
  * @param {string} name - Unique session name (e.g. "general", "code", "complex")
  * @param {object} options
- * @param {string} options.systemPromptPath - Absolute path to the system prompt file
+ * @param {string} [options.systemPromptPath] - Absolute path to the system prompt file (optional)
  * @param {string} [options.cwd] - Working directory for the CLI process
  * @param {function} [options.onExit] - Callback: onExit(exitCode, signal)
  * @returns {Promise<{ name: string, sessionId: string, status: string }>}
@@ -67,28 +70,39 @@ export async function startCli(name, options = {}) {
     throw new Error(msg);
   }
 
-  // Read system prompt
-  let systemPrompt;
-  try {
-    systemPrompt = await readFile(systemPromptPath, 'utf-8');
-  } catch (readErr) {
-    log('ERROR', COMPONENT, 'Failed to read system prompt file', {
+  // Build args — systemPromptPath is now optional
+  let args;
+  if (systemPromptPath) {
+    // Backward-compatible: read system prompt file and inject via -p
+    let systemPrompt;
+    try {
+      systemPrompt = await readFile(systemPromptPath, 'utf-8');
+    } catch (readErr) {
+      log('ERROR', COMPONENT, 'Failed to read system prompt file', {
+        name,
+        path: systemPromptPath,
+        error: readErr.message,
+      });
+      throw new Error(`Failed to read system prompt file for CLI "${name}": ${readErr.message}`);
+    }
+
+    log('INFO', COMPONENT, 'Starting CLI session with injected system prompt', {
       name,
-      path: systemPromptPath,
-      error: readErr.message,
+      systemPromptPath,
+      cwd,
+      promptLength: systemPrompt.length,
     });
-    throw new Error(`Failed to read system prompt file for CLI "${name}": ${readErr.message}`);
+
+    args = ['-p', systemPrompt, '--output-format', 'json', '--dangerously-skip-permissions'];
+  } else {
+    // No system prompt file — CLI reads instructions from cwd/CLAUDE.md
+    log('INFO', COMPONENT, 'Starting CLI session (cwd CLAUDE.md mode)', {
+      name,
+      cwd,
+    });
+
+    args = ['-p', '你好，请开始工作。', '--output-format', 'json', '--dangerously-skip-permissions'];
   }
-
-  log('INFO', COMPONENT, 'Starting CLI session', {
-    name,
-    systemPromptPath,
-    cwd,
-    promptLength: systemPrompt.length,
-  });
-
-  // Build args
-  const args = ['-p', systemPrompt, '--output-format', 'json', '--dangerously-skip-permissions'];
 
   const env = { ...process.env };
   delete env.CLAUDECODE;
@@ -181,7 +195,7 @@ export async function startCli(name, options = {}) {
         name,
         sessionId,
         status: 'idle',
-        systemPromptPath,
+        systemPromptPath: systemPromptPath || null,
         cwd: resolvedCwd,
         startedAt: now,
         lastActivity: now,
