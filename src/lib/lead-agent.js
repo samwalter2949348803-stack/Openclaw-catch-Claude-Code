@@ -76,9 +76,11 @@ export async function startLeadAgent(options) {
     promptLength: systemPrompt.length,
   });
 
-  // Build args: claude -p "<system prompt>" --output-format json
+  // Build args: claude -p "<system prompt>" --output-format json --dangerously-skip-permissions
   // Note: working directory is set via spawn's cwd option, not CLI flag
-  const args = ['-p', systemPrompt, '--output-format', 'json'];
+  // --dangerously-skip-permissions is required because Lead Agent runs non-interactively
+  // and cannot prompt for permission approval
+  const args = ['-p', systemPrompt, '--output-format', 'json', '--dangerously-skip-permissions'];
 
   // Spawn the initial session using a raw spawn so we can:
   //   1. Capture the full JSON output to extract session_id
@@ -217,8 +219,8 @@ export async function sendToLead(message, options = {}) {
     timeout,
   });
 
-  // Build args: --resume <sessionId> -p "<message>" --output-format json
-  const args = ['--resume', sessionId, '-p', message, '--output-format', 'json'];
+  // Build args: --resume <sessionId> -p "<message>" --output-format json --dangerously-skip-permissions
+  const args = ['--resume', sessionId, '-p', message, '--output-format', 'json', '--dangerously-skip-permissions'];
 
   leadState.lastActivity = new Date().toISOString();
 
