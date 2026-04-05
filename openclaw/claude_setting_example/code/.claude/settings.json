@@ -1,0 +1,13 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [{
+          "type": "command",
+          "command": "echo \"$BASH_COMMAND\" | grep -qE '^(rm -rf|drop table|DELETE FROM|git push --force)' && echo 'BLOCKED' && exit 1 || exit 0"
+        }]
+      }
+    ]
+  }
+}

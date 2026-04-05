@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"from app.config import settings; print\\(''PHONE_ID:'', settings.WHATSAPP_PHONE_NUMBER_ID\\); print\\(''SHEET_ID:'', settings.GOOGLE_SHEETS_SPREADSHEET_ID[:20]+''...''\\)\")",
+      "Bash(curl -s http://localhost:8000/health/simple)"
+    ]
+  }
+}

@@ -8,6 +8,7 @@
  * Zero external dependencies — Node.js built-in APIs only.
  */
 
+import fs from 'node:fs';
 import path from 'node:path';
 import { json } from '../lib/helpers.js';
 import {
@@ -24,6 +25,7 @@ import { log } from '../lib/logger.js';
 const VALID_CLI_NAMES = ['general', 'code', 'complex'];
 const DEFAULT_CWD = process.env.DEFAULT_CWD || '/root';
 const DEFAULT_CLI_TIMEOUT = parseInt(process.env.LEAD_TIMEOUT || '300', 10) * 1000;
+const CLI_WORKSPACES_DIR = path.resolve(process.cwd(), '.cli-workspaces');
 
 const COMPONENT = 'cli-route';
 
@@ -63,6 +65,21 @@ function getSystemPromptPath(name) {
   return path.resolve(process.cwd(), '.agents', name, 'system.md');
 }
 
+/**
+ * Resolve the default cwd for a given CLI name.
+ * If a dedicated workspace directory exists at .cli-workspaces/{name}/,
+ * use it; otherwise fall back to DEFAULT_CWD.
+ */
+function getDefaultCwd(name) {
+  const agentWorkspace = path.join(CLI_WORKSPACES_DIR, name);
+  try {
+    fs.accessSync(agentWorkspace);
+    return agentWorkspace;
+  } catch {
+    return DEFAULT_CWD;
+  }
+}
+
 // ── POST /cli/start — Start a named CLI session ───────────────────────
 
 /**
@@ -80,7 +97,7 @@ export async function handleCliStart(body, req, res) {
   if (validateCliName(name, res)) return;
 
   const systemPromptPath = getSystemPromptPath(name);
-  const resolvedCwd = cwd || DEFAULT_CWD;
+  const resolvedCwd = cwd || getDefaultCwd(name);
 
   log('INFO', COMPONENT, 'CLI start requested', { name, cwd: resolvedCwd });
 
@@ -148,7 +165,7 @@ export async function handleCliSend(body, req, res) {
     log('INFO', COMPONENT, 'CLI not active, lazy-starting before send', { name });
 
     const systemPromptPath = getSystemPromptPath(name);
-    const resolvedCwd = DEFAULT_CWD;
+    const resolvedCwd = getDefaultCwd(name);
 
     try {
       await startCli(name, {
