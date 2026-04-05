@@ -1,0 +1,1412 @@
+openapi: 3.0.3
+info:
+  title: Openclaw Claude Code Bridge API
+  version: 1.0.0
+  description: |
+    HTTP-to-CLI bridge for controlling Claude Code sessions.
+
+    All endpoints (except /health) are prefixed with `/backend-api/claude-code`.
+    For example, the full URL for `/session/start` is
+    `http://localhost:18795/backend-api/claude-code/session/start`.
+
+    Authentication is optional. When the `AUTH_TOKEN` environment variable is set,
+    every request (except `/health`) must include a valid `Authorization: Bearer <token>` header.
+
+servers:
+  - url: http://localhost:18795/backend-api/claude-code
+    description: Local development server (prefixed endpoints)
+  - url: http://localhost:18795
+    description: Local development server (health endpoint only)
+
+tags:
+  - name: claude
+    description: Top-level Claude CLI operations (connect, disconnect, resume, continue, tools, sessions)
+  - name: session
+    description: Named session management (start, send, stop, status, etc.)
+  - name: tools
+    description: Direct tool execution without going through Claude CLI sessions
+  - name: health
+    description: Server health check (no prefix, no auth)
+  - name: not-implemented
+    description: Stub endpoints that return 501 Not Implemented
+
+security:
+  - BearerAuth: []
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        Optional Bearer token authentication. Enabled when the AUTH_TOKEN
+        environment variable is set on the server. When disabled, all requests
+        are accepted without authentication.
+
+  schemas:
+    # ── Shared schemas ────────────────────────────────────────────────
+
+    ErrorResponse:
+      type: object
+      required: [ok, error, code]
+      properties:
+        ok:
+          type: boolean
+          enum: [false]
+        error:
+          type: string
+          description: Human-readable error message
+        code:
+          type: string
+          description: Machine-readable error code
+      example:
+        ok: false
+        error: "Session 'my-session' not found"
+        code: SESSION_NOT_FOUND
+
+    NotImplementedResponse:
+      type: object
+      required: [ok, error, code, endpoint]
+      properties:
+        ok:
+          type: boolean
+          enum: [false]
+        error:
+          type: string
+          enum: ["Not implemented"]
+        code:
+          type: string
+          enum: ["NOT_IMPLEMENTED"]
+        endpoint:
+          type: string
+          description: The endpoint that is not implemented
+      example:
+        ok: false
+        error: "Not implemented"
+        code: NOT_IMPLEMENTED
+        endpoint: "/session/fork"
+
+    SessionConfig:
+      type: object
+      description: Configuration options for Claude CLI sessions
+      properties:
+        model:
+          type: string
+          description: Claude model to use
+        permissionMode:
+          type: string
+          description: Permission mode for the Claude CLI
+        systemPrompt:
+          type: string
+          description: System prompt to prepend
+        appendSystemPrompt:
+          type: string
+          description: System prompt to append
+        maxTurns:
+          type: integer
+          description: Maximum number of turns
+        maxBudgetUsd:
+          type: number
+          description: Maximum budget in USD
+        dangerouslySkipPermissions:
+          type: boolean
+          description: Skip permission checks (dangerous)
+        allowedTools:
+          type: array
+          items:
+            type: string
+          description: List of allowed tool names
+        disallowedTools:
+          type: array
+          items:
+            type: string
+          description: List of disallowed tool names
+        tools:
+          type: array
+          items:
+            type: string
+          description: List of tool names to enable
+        addDir:
+          type: array
+          items:
+            type: string
+          description: Additional directories to include
+        baseUrl:
+          type: string
+          description: Custom base URL for Claude API
+        agents:
+          type: object
+          description: Agent configuration object
+        agent:
+          type: string
+          description: Agent name
+
+    HistoryMessage:
+      type: object
+      properties:
+        role:
+          type: string
+          enum: [user, assistant]
+        text:
+          type: string
+          description: Plain-text content of the message
+        blocks:
+          type: array
+          nullable: true
+          items:
+            type: object
+            properties:
+              type:
+                type: string
+          description: Lightweight type-only array of content blocks, or null
+        timestamp:
+          type: string
+          nullable: true
+          description: ISO 8601 timestamp if available
+
+    ToolInfo:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+
+paths:
+  # ══════════════════════════════════════════════════════════════════════
+  #  Health (no prefix, no auth)
+  # ══════════════════════════════════════════════════════════════════════
+
+  /health:
+    get:
+      tags: [health]
+      summary: Server health check
+      description: |
+        Returns server health information. This endpoint is served at
+        `http://localhost:18795/health` directly (no prefix, no authentication).
+      security: []
+      responses:
+        "200":
+          description: Server is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, uptime, activeSessions, activeProcesses, maxConcurrent, timestamp]
+                properties:
+                  ok:
+                    type: boolean
+                    enum: [true]
+                  uptime:
+                    type: number
+                    description: Server uptime in seconds
+                  activeSessions:
+                    type: integer
+                    description: Number of active named sessions
+                  activeProcesses:
+                    type: integer
+                    description: Number of currently running Claude CLI processes
+                  maxConcurrent:
+                    type: integer
+                    description: Maximum number of concurrent Claude processes allowed
+                  timestamp:
+                    type: string
+                    format: date-time
+
+  # ══════════════════════════════════════════════════════════════════════
+  #  Claude top-level endpoints
+  # ══════════════════════════════════════════════════════════════════════
+
+  /connect:
+    post:
+      tags: [claude]
+      summary: Connect to the server
+      description: Returns connection status and the number of available tools.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Connected successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, status, server, tools]
+                properties:
+                  ok:
+                    type: boolean
+                    enum: [true]
+                  status:
+                    type: string
+                    enum: [connected]
+                  server:
+                    type: object
+                    properties:
+                      name:
+                        type: string
+                        example: claude-backend-api
+                  tools:
+                    type: integer
+                    description: Number of available tools
+        "401":
+          description: Unauthorized (AUTH_TOKEN mismatch)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /disconnect:
+    post:
+      tags: [claude]
+      summary: Disconnect from the server
+      description: Signals a client disconnect. Currently a no-op that returns success.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Disconnected successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok:
+                    type: boolean
+                    enum: [true]
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /tools:
+    get:
+      tags: [claude]
+      summary: List available Claude CLI tools
+      description: Returns the static list of tools that Claude can use (Bash, Read, Write, Edit, Glob, Grep, Agent, WebSearch, WebFetch).
+      responses:
+        "200":
+          description: Tool list retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, tools]
+                properties:
+                  ok:
+                    type: boolean
+                    enum: [true]
+                  tools:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ToolInfo"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sessions:
+    get:
+      tags: [claude]
+      summary: List Claude JSONL sessions from disk
+      description: |
+        Reads the Claude CLI sessions directory and returns metadata for each
+        JSONL session file found. Sorted by last modified time (newest first).
+      responses:
+        "200":
+          description: Session list retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, sessions]
+                properties:
+                  ok:
+                    type: boolean
+                    enum: [true]
+                  sessions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        sessionId:
+                          type: string
+                          description: Claude CLI session ID
+                        summary:
+                          type: string
+                          description: First user message (up to 100 chars)
+                        projectPath:
+                          type: string
+                          description: Working directory from the session
+                        modified:
+                          type: string
+                          format: date-time
+                          description: Last modification time
+                        messageCount:
+                          type: integer
+                          description: Estimated number of messages
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Failed to list sessions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /resume:
+    post:
+      tags: [claude]
+      summary: Resume an existing Claude session by ID
+      description: Resumes a Claude CLI session using its session ID and sends a new prompt.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sessionId, prompt]
+              properties:
+                sessionId:
+                  type: string
+                  description: Claude CLI session ID to resume
+                prompt:
+                  type: string
+                  description: Prompt to send to the resumed session
+                cwd:
+                  type: string
+                  description: Working directory (defaults to DEFAULT_CWD)
+                timeout:
+                  type: integer
+                  description: Timeout in milliseconds (default 120000)
+      responses:
+        "200":
+          description: Session resumed and prompt executed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok:
+                    type: boolean
+                    enum: [true]
+                  output:
+                    type: string
+                    description: Claude's response text
+                  stderr:
+                    type: string
+                    description: Standard error output from the CLI process
+                  session_id:
+                    type: string
+                    description: The session ID (may change after resume)
+        "400":
+          description: Missing required parameters
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Resume failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /continue:
+    post:
+      tags: [claude]
+      summary: Continue the most recent Claude session
+      description: Continues the most recent Claude CLI session with a new prompt.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [prompt]
+              properties:
+                prompt:
+                  type: string
+                  description: Prompt to send
+                cwd:
+                  type: string
+                  description: Working directory (defaults to DEFAULT_CWD)
+                timeout:
+                  type: integer
+                  description: Timeout in milliseconds (default 120000)
+      responses:
+        "200":
+          description: Session continued and prompt executed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok:
+                    type: boolean
+                    enum: [true]
+                  output:
+                    type: string
+                    description: Claude's response text
+                  stderr:
+                    type: string
+                    description: Standard error output from the CLI process
+                  session_id:
+                    type: string
+                    description: The session ID
+        "400":
+          description: Missing required parameters
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Continue failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ══════════════════════════════════════════════════════════════════════
+  #  Session management endpoints
+  # ══════════════════════════════════════════════════════════════════════
+
+  /session/start:
+    post:
+      tags: [session]
+      summary: Create a new named session
+      description: |
+        Creates a new named session by spawning a Claude CLI process with an
+        initialization prompt. The resulting Claude session ID is stored and
+        associated with the given name for future send/stop/status operations.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - type: object
+                  required: [name]
+                  properties:
+                    name:
+                      type: string
+                      description: Unique session name
+                    cwd:
+                      type: string
+                      description: Working directory for the session (defaults to DEFAULT_CWD)
+                    timeout:
+                      type: integer
+                      description: Timeout in milliseconds (default 120000)
+                - $ref: "#/components/schemas/SessionConfig"
+      responses:
+        "200":
+          description: Session created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, claudeSessionId]
+                properties:
+                  ok:
+                    type: boolean
+                    enum: [true]
+                  claudeSessionId:
+                    type: string
+                    description: The Claude CLI session ID assigned to this session
+        "400":
+          description: Missing required parameter
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Session start failed (e.g. Claude CLI not installed)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /session/send:
+    post:
+      tags: [session]
+      summary: Send a message to a named session
+      description: |
+        Sends a message to an existing named session and waits for the full
+        response. The session is locked during execution to prevent concurrent
+        sends to the same session.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, message]
+              properties:
+                name:
+                  type: string
+                  description: Session name
+                message:
+                  type: string
+                  description: Message to send to Claude
+                timeout:
+                  type: integer
+                  description: Timeout in milliseconds (default 120000)
+      responses:
+        "200":
+          description: Message sent and response received
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, response]
+                properties:
+                  ok:
+                    type: boolean
+                    enum: [true]
+                  response:
+                    type: string
+                    description: Claude's response text
+        "400":
+          description: Missing parameters or session has no Claude session ID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Send failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /session/send-stream:
+    post:
+      tags: [session]
+      summary: Send a message to a named session with SSE streaming
+      description: |
+        Sends a message to an existing named session and streams the response
+        as Server-Sent Events (SSE). The connection stays open until Claude
+        finishes generating or an error occurs.
+
+        SSE event types:
+        - `start` -- emitted when the stream begins; data contains `{ sessionId }`.
+        - `data` -- emitted for each chunk of streamed output from the Claude CLI.
+        - `error` -- emitted when an error occurs; data contains `{ error, code }`.
+
+        The session is locked during streaming to prevent concurrent sends.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, message]
+              properties:
+                name:
+                  type: string
+                  description: Session name
+                message:
+                  type: string
+                  description: Message to send to Claude
+                timeout:
+                  type: integer
+                  description: Timeout in milliseconds (default 120000)
+      responses:
+        "200":
+          description: SSE stream of Claude's response
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: |
+                  Server-Sent Events stream. Each event has the format:
+
+                  ```
+                  event: <type>
+                  data: <json>
+                  ```
+
+                  Event types: start, data, error.
+        "400":
+          description: Missing parameters or session has no Claude session ID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /session/list:
+    get:
+      tags: [session]
+      summary: List all named sessions
+      description: Returns a list of all named sessions managed by this server.
+      responses:
+        "200":
+          description: Session list retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, sessions]
+                properties:
+                  ok:
+                    type: boolean
+                    enum: [true]
+                  sessions:
+                    type: array
+                    items:
+                      type: object
+                      required: [name, cwd, created, isReady]
+                      properties:
+                        name:
+                          type: string
+                          description: Session name
+                        cwd:
+                          type: string
+                          description: Working directory
+                        created:
+                          type: string
+                          format: date-time
+                          description: Creation timestamp
+                        isReady:
+                          type: boolean
+                          description: Whether the session has a valid Claude session ID
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /session/stop:
+    post:
+      tags: [session]
+      summary: Stop and remove a named session
+      description: Removes a named session from the session store and releases its lock.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  description: Session name to stop
+      responses:
+        "200":
+          description: Session stopped
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok:
+                    type: boolean
+                    enum: [true]
+        "400":
+          description: Missing required parameter
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /session/status:
+    post:
+      tags: [session]
+      summary: Get session status and statistics
+      description: Returns detailed status information for a named session, including token usage and uptime.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  description: Session name
+      responses:
+        "200":
+          description: Session status retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, claudeSessionId, cwd, created, stats]
+                properties:
+                  ok:
+                    type: boolean
+                    enum: [true]
+                  claudeSessionId:
+                    type: string
+                    description: The Claude CLI session ID
+                  cwd:
+                    type: string
+                    description: Working directory
+                  created:
+                    type: string
+                    format: date-time
+                    description: Session creation timestamp
+                  stats:
+                    type: object
+                    required: [turns, toolCalls, tokensIn, tokensOut, uptime, lastActivity, isReady]
+                    properties:
+                      turns:
+                        type: integer
+                        description: Number of conversation turns
+                      toolCalls:
+                        type: integer
+                        description: Number of tool calls (currently always 0)
+                      tokensIn:
+                        type: integer
+                        nullable: true
+                        description: Total input tokens consumed (null if unknown)
+                      tokensOut:
+                        type: integer
+                        nullable: true
+                        description: Total output tokens consumed (null if unknown)
+                      uptime:
+                        type: integer
+                        description: Session uptime in seconds
+                      lastActivity:
+                        type: string
+                        format: date-time
+                        description: Timestamp of last activity
+                      isReady:
+                        type: boolean
+                        description: Whether the session has a valid Claude session ID
+        "400":
+          description: Missing required parameter
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /session/restart:
+    post:
+      tags: [session]
+      summary: Restart a named session
+      description: |
+        Destroys the current Claude CLI session for the given name and creates
+        a new one with the same configuration. Token counters and turn count
+        are reset.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  description: Session name to restart
+      responses:
+        "200":
+          description: Session restarted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok:
+                    type: boolean
+                    enum: [true]
+        "400":
+          description: Missing required parameter
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Restart failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /session/history:
+    post:
+      tags: [session]
+      summary: Get session conversation history
+      description: |
+        Reads the JSONL session file from disk and returns the conversation
+        history for a named session. Supports pagination via limit and offset.
+        Only user and assistant messages are included.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  description: Session name
+                limit:
+                  type: integer
+                  minimum: 1
+                  maximum: 200
+                  default: 50
+                  description: Maximum number of messages to return
+                offset:
+                  type: integer
+                  minimum: 0
+                  default: 0
+                  description: Number of messages to skip from the beginning
+      responses:
+        "200":
+          description: History retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, count, history, total]
+                properties:
+                  ok:
+                    type: boolean
+                    enum: [true]
+                  count:
+                    type: integer
+                    description: Number of messages in this response
+                  history:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/HistoryMessage"
+                  total:
+                    type: integer
+                    description: Total number of messages available
+        "400":
+          description: Missing required parameter or no Claude session ID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Failed to read history
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ══════════════════════════════════════════════════════════════════════
+  #  Not Implemented session endpoints (501)
+  # ══════════════════════════════════════════════════════════════════════
+
+  /session/pause:
+    post:
+      tags: [not-implemented]
+      summary: Pause a session (Not Implemented)
+      description: |
+        **Not Implemented.** This endpoint is a stub that always returns 501.
+        Reserved for future implementation of session pause functionality.
+      deprecated: true
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "501":
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /session/resume:
+    post:
+      tags: [not-implemented]
+      summary: Resume a paused session (Not Implemented)
+      description: |
+        **Not Implemented.** This endpoint is a stub that always returns 501.
+        Reserved for future implementation of session resume functionality.
+        Note: this is distinct from the top-level `/resume` endpoint which
+        resumes a Claude CLI session by ID.
+      deprecated: true
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "501":
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /session/fork:
+    post:
+      tags: [not-implemented]
+      summary: Fork a session (Not Implemented)
+      description: |
+        **Not Implemented.** This endpoint is a stub that always returns 501.
+        Reserved for future implementation of session forking functionality.
+      deprecated: true
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "501":
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /session/search:
+    post:
+      tags: [not-implemented]
+      summary: Search session history (Not Implemented)
+      description: |
+        **Not Implemented.** This endpoint is a stub that always returns 501.
+        Reserved for future implementation of session search functionality.
+      deprecated: true
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "501":
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotImplementedResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ══════════════════════════════════════════════════════════════════════
+  #  Tool endpoints
+  # ══════════════════════════════════════════════════════════════════════
+
+  /bash:
+    post:
+      tags: [tools]
+      summary: Execute a bash command
+      description: |
+        Executes an arbitrary bash command on the server. Subject to security
+        controls:
+        - Disabled entirely when `BASH_DISABLED=true` (returns 403).
+        - Hard-coded blacklist blocks destructive patterns (rm -rf /, mkfs, etc.).
+        - Optional whitelist via `BASH_ALLOWED_COMMANDS` env var restricts
+          which commands can be executed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [command]
+              properties:
+                command:
+                  type: string
+                  description: The bash command to execute
+      responses:
+        "200":
+          description: Command executed (may still have non-zero exit code)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, result]
+                properties:
+                  ok:
+                    type: boolean
+                    enum: [true]
+                  result:
+                    type: object
+                    required: [stdout, stderr]
+                    properties:
+                      stdout:
+                        type: string
+                        description: Standard output
+                      stderr:
+                        type: string
+                        description: Standard error
+        "400":
+          description: Missing required parameter
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Command not allowed (blacklisted, whitelisted, or bash disabled)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Command execution failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /read:
+    post:
+      tags: [tools]
+      summary: Read a file
+      description: Reads the contents of a file at the given absolute path.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [file_path]
+              properties:
+                file_path:
+                  type: string
+                  description: Absolute path to the file to read
+      responses:
+        "200":
+          description: File content retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, result]
+                properties:
+                  ok:
+                    type: boolean
+                    enum: [true]
+                  result:
+                    type: object
+                    required: [type, file]
+                    properties:
+                      type:
+                        type: string
+                        enum: [file]
+                      file:
+                        type: object
+                        required: [content]
+                        properties:
+                          content:
+                            type: string
+                            description: File content as UTF-8 string
+        "400":
+          description: Missing required parameter
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: File read failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /call:
+    post:
+      tags: [tools]
+      summary: Execute a tool directly
+      description: |
+        Executes a supported tool (Glob, Grep, or Read) directly via shell
+        commands, without going through a Claude CLI session. Unsupported tools
+        return 501.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tool]
+              properties:
+                tool:
+                  type: string
+                  enum: [Glob, Grep, Read]
+                  description: Tool name to execute
+                args:
+                  type: object
+                  description: |
+                    Tool-specific arguments:
+
+                    **Glob**: `{ pattern: string, path?: string }`
+                    - pattern: glob pattern (e.g. "*.js", "src/**/*.ts")
+                    - path: base directory (defaults to DEFAULT_CWD)
+
+                    **Grep**: `{ pattern: string, path?: string, glob?: string, output_mode?: "content" }`
+                    - pattern: search pattern
+                    - path: directory to search (defaults to DEFAULT_CWD)
+                    - glob: file glob filter (e.g. "*.js")
+                    - output_mode: "content" for full matches, otherwise filenames only
+
+                    **Read**: `{ file_path: string }`
+                    - file_path: absolute path to the file
+      responses:
+        "200":
+          description: Tool executed successfully
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: object
+                    description: Glob or Grep result
+                    required: [ok, result]
+                    properties:
+                      ok:
+                        type: boolean
+                        enum: [true]
+                      result:
+                        type: object
+                        properties:
+                          filenames:
+                            type: array
+                            items:
+                              type: string
+                            description: List of matching file paths
+                          content:
+                            type: string
+                            description: Raw stdout from the command
+                  - type: object
+                    description: Read result
+                    required: [ok, result]
+                    properties:
+                      ok:
+                        type: boolean
+                        enum: [true]
+                      result:
+                        type: object
+                        properties:
+                          type:
+                            type: string
+                            enum: [file]
+                          file:
+                            type: object
+                            properties:
+                              content:
+                                type: string
+        "400":
+          description: Missing required parameter
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Tool execution failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "501":
+          description: Tool not directly supported via /call
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /batch-read:
+    post:
+      tags: [tools]
+      summary: Batch read files by glob patterns
+      description: |
+        Reads multiple files matching the given glob patterns. For each pattern,
+        finds matching files and reads their contents. Results are returned as
+        an array of file objects.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                patterns:
+                  type: array
+                  items:
+                    type: string
+                  default: []
+                  description: Array of glob patterns (e.g. ["src/*.js", "**/*.md"])
+                basePath:
+                  type: string
+                  description: Base directory for pattern resolution (defaults to DEFAULT_CWD)
+      responses:
+        "200":
+          description: Batch read completed (individual files may have errors)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, files]
+                properties:
+                  ok:
+                    type: boolean
+                    enum: [true]
+                  files:
+                    type: array
+                    items:
+                      type: object
+                      required: [path, content]
+                      properties:
+                        path:
+                          type: string
+                          description: Absolute file path
+                        content:
+                          type: string
+                          description: File content (empty string on error)
+                        error:
+                          type: string
+                          description: Error message if the file could not be read
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
