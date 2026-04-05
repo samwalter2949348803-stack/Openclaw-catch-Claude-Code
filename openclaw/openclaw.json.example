@@ -23,6 +23,9 @@
       }
     }
   },
+  "tools": {
+    "deny": ["exec"]
+  },
   "gateway": {
     "auth": {
       "mode": "token",
