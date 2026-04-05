@@ -30,6 +30,7 @@ let leadState = {
   running: false,       // Whether the Lead Agent has been initialized
   startedAt: null,      // ISO timestamp of initialization
   lastActivity: null,   // ISO timestamp of last sendToLead or start
+  cwd: null,            // Working directory locked at initialization (CLI sessions are dir-bound)
 };
 
 // ── P4-1: Start Lead Agent ─────────────────────────────────────────────
@@ -174,6 +175,7 @@ export async function startLeadAgent(options) {
         running: true,
         startedAt: now,
         lastActivity: now,
+        cwd: cwd || process.cwd(), // lock cwd — CLI sessions are directory-bound
       };
 
       log('INFO', 'lead-agent', 'Lead Agent started successfully', {
@@ -206,7 +208,7 @@ export async function sendToLead(message, options = {}) {
   }
 
   const timeout = options.timeout || DEFAULT_TIMEOUT;
-  const cwd = options.cwd || process.cwd();
+  const cwd = leadState.cwd || process.cwd(); // always use the locked cwd from initialization
   const sessionId = leadState.sessionId;
 
   log('INFO', 'lead-agent', 'Sending message to Lead Agent', {
@@ -297,6 +299,7 @@ function resetState() {
     running: false,
     startedAt: null,
     lastActivity: null,
+    cwd: null,
   };
 }
 

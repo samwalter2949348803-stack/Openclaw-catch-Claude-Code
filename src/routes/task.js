@@ -131,7 +131,6 @@ export async function handleTaskSubmit(body, req, res) {
   try {
     const result = await sendToLead(message, {
       timeout: effectiveTimeout,
-      cwd: taskCwd,
     });
 
     // Extract a task ID from the response if the Lead Agent included one,
