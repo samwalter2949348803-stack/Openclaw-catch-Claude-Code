@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test": "node --test test/helpers.test.js test/server.test.js test/lead-agent.test.js"
+    "test": "node --test test/helpers.test.js test/server.test.js test/lead-agent.test.js test/cli-pool.test.js"
   },
   "engines": {
     "node": ">=18.0.0"
