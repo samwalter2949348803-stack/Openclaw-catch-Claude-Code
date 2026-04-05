@@ -1,9 +1,16 @@
 openapi: 3.0.3
 info:
   title: Openclaw Claude Code Bridge API
-  version: 1.0.0
+  version: 2.0.0
   description: |
     HTTP-to-CLI bridge for controlling Claude Code sessions.
+
+    **v2.0.0** introduces a multi-CLI pool architecture. In addition to the
+    original single-session and named-session endpoints, the server now manages
+    a pool of specialised Claude CLI agents (`general`, `code`, `complex`) via
+    the `/cli/*` endpoints. The legacy `/task/*` and `/lead/*` endpoints are
+    preserved for backward compatibility and internally delegate to the
+    `general` CLI in the pool.
 
     All endpoints (except /health) are prefixed with `/backend-api/claude-code`.
     For example, the full URL for `/session/start` is
@@ -23,6 +30,12 @@ tags:
     description: Top-level Claude CLI operations (connect, disconnect, resume, continue, tools, sessions)
   - name: session
     description: Named session management (start, send, stop, status, etc.)
+  - name: cli
+    description: Multi-CLI pool management (general/code/complex agents)
+  - name: task
+    description: Task submission and tracking (delegates to general CLI internally)
+  - name: lead
+    description: Lead Agent (general CLI) lifecycle management
   - name: tools
     description: Direct tool execution without going through Claude CLI sessions
   - name: health
@@ -44,7 +57,7 @@ components:
         are accepted without authentication.
 
   schemas:
-    # ── Shared schemas ────────────────────────────────────────────────
+    # -- Shared schemas --------------------------------------------------------
 
     ErrorResponse:
       type: object
@@ -172,10 +185,64 @@ components:
         description:
           type: string
 
+    # -- CLI pool schemas (v2.0.0) ---------------------------------------------
+
+    CliInfo:
+      type: object
+      description: Status information for a single CLI session in the pool
+      properties:
+        name:
+          type: string
+          description: CLI agent name (general, code, or complex)
+          enum: [general, code, complex]
+        sessionId:
+          type: string
+          nullable: true
+          description: Claude CLI session ID, or null if not yet assigned
+        status:
+          type: string
+          description: Current lifecycle status of the CLI
+        cwd:
+          type: string
+          description: Working directory for the CLI process
+        startedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: ISO 8601 timestamp when the CLI was started
+        lastActivity:
+          type: string
+          format: date-time
+          nullable: true
+          description: ISO 8601 timestamp of the most recent interaction
+
+    CliSendResponse:
+      type: object
+      description: Response from sending a message to a CLI session
+      required: [ok, name, response]
+      properties:
+        ok:
+          type: boolean
+          enum: [true]
+        name:
+          type: string
+          description: CLI agent name that handled the message
+        response:
+          type: string
+          description: Claude's response text
+        sessionId:
+          type: string
+          nullable: true
+          description: The underlying Claude CLI session ID
+        usage:
+          type: object
+          nullable: true
+          description: Token usage information, or null if unavailable
+
 paths:
-  # ══════════════════════════════════════════════════════════════════════
+  # ============================================================================
   #  Health (no prefix, no auth)
-  # ══════════════════════════════════════════════════════════════════════
+  # ============================================================================
 
   /health:
     get:
@@ -213,9 +280,9 @@ paths:
                     type: string
                     format: date-time
 
-  # ══════════════════════════════════════════════════════════════════════
+  # ============================================================================
   #  Claude top-level endpoints
-  # ══════════════════════════════════════════════════════════════════════
+  # ============================================================================
 
   /connect:
     post:
@@ -497,9 +564,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
-  # ══════════════════════════════════════════════════════════════════════
+  # ============================================================================
   #  Session management endpoints
-  # ══════════════════════════════════════════════════════════════════════
+  # ============================================================================
 
   /session/start:
     post:
@@ -996,9 +1063,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
-  # ══════════════════════════════════════════════════════════════════════
+  # ============================================================================
   #  Not Implemented session endpoints (501)
-  # ══════════════════════════════════════════════════════════════════════
+  # ============================================================================
 
   /session/pause:
     post:
@@ -1114,9 +1181,594 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
-  # ══════════════════════════════════════════════════════════════════════
+  # ============================================================================
+  #  CLI pool management endpoints (v2.0.0)
+  # ============================================================================
+
+  /cli/start:
+    post:
+      tags: [cli]
+      summary: Start a named CLI agent
+      description: |
+        Starts a specific CLI agent session from the pool. Each agent type
+        (`general`, `code`, `complex`) loads its own system prompt from
+        `.agents/{name}/system.md` and runs in an isolated Claude CLI process.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  enum: [general, code, complex]
+                  description: CLI agent name to start
+                cwd:
+                  type: string
+                  description: Working directory for the CLI process (defaults to DEFAULT_CWD)
+      responses:
+        "200":
+          description: CLI agent started successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, name, sessionId, status]
+                properties:
+                  ok:
+                    type: boolean
+                    enum: [true]
+                  name:
+                    type: string
+                    description: CLI agent name
+                  sessionId:
+                    type: string
+                    description: Claude CLI session ID assigned to this agent
+                  status:
+                    type: string
+                    description: Current status of the CLI agent
+        "400":
+          description: Invalid or missing CLI name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: CLI start failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /cli/send:
+    post:
+      tags: [cli]
+      summary: Send a message to a named CLI agent
+      description: |
+        Sends a message to a specific CLI agent and waits for the full response.
+        If the target CLI is not currently running, it will be started automatically
+        (lazy initialization) before the message is delivered.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, message]
+              properties:
+                name:
+                  type: string
+                  enum: [general, code, complex]
+                  description: CLI agent name to send the message to
+                message:
+                  type: string
+                  description: Message to send to the CLI agent
+                timeout:
+                  type: integer
+                  description: |
+                    Timeout in milliseconds. Defaults to LEAD_TIMEOUT env var
+                    (default 300s). The CLI will be killed if it does not respond
+                    within this period.
+      responses:
+        "200":
+          description: Message sent and response received
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CliSendResponse"
+        "400":
+          description: Missing or invalid parameters
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Send failed (or lazy-start failed)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "504":
+          description: CLI execution timed out
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /cli/stop:
+    post:
+      tags: [cli]
+      summary: Stop a named CLI agent
+      description: |
+        Stops a specific CLI agent session. The underlying Claude CLI process
+        is terminated and the session is removed from the pool.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  enum: [general, code, complex]
+                  description: CLI agent name to stop
+      responses:
+        "200":
+          description: CLI agent stopped
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, name, stopped]
+                properties:
+                  ok:
+                    type: boolean
+                    enum: [true]
+                  name:
+                    type: string
+                    description: CLI agent name
+                  stopped:
+                    type: boolean
+                    enum: [true]
+                    description: Confirmation that the CLI was stopped
+        "400":
+          description: Invalid or missing CLI name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /cli/{name}/status:
+    get:
+      tags: [cli]
+      summary: Get status of a specific CLI agent
+      description: |
+        Returns detailed status information for a single CLI agent, including
+        its session ID, lifecycle status, working directory, and timestamps.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [general, code, complex]
+          description: CLI agent name
+      responses:
+        "200":
+          description: CLI agent status retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, cli]
+                properties:
+                  ok:
+                    type: boolean
+                    enum: [true]
+                  cli:
+                    $ref: "#/components/schemas/CliInfo"
+        "400":
+          description: Invalid CLI name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: CLI agent not found (has not been started)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /cli/list:
+    get:
+      tags: [cli]
+      summary: List all CLI agents in the pool
+      description: |
+        Returns a list of all CLI agent sessions currently registered in the
+        pool, regardless of their lifecycle status.
+      responses:
+        "200":
+          description: CLI agent list retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, clis]
+                properties:
+                  ok:
+                    type: boolean
+                    enum: [true]
+                  clis:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/CliInfo"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ============================================================================
+  #  Task and Lead endpoints (backward-compatible, delegate to general CLI)
+  # ============================================================================
+
+  /task/submit:
+    post:
+      tags: [task]
+      summary: Submit a task to the Lead Agent
+      description: |
+        Submits a task message to the Lead Agent for execution. Internally, this
+        endpoint delegates to the `general` CLI in the pool. If the general CLI
+        is not running, it will be lazily initialized. If the general CLI has
+        previously crashed, the endpoint returns 503 until it is restarted via
+        `/lead/restart`.
+
+        Timeout protection is applied: if the CLI does not respond within the
+        configured timeout, a 504 is returned.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [message]
+              properties:
+                message:
+                  type: string
+                  description: Task message to send to the Lead Agent
+                cwd:
+                  type: string
+                  description: Working directory (defaults to DEFAULT_CWD)
+                timeout:
+                  type: integer
+                  description: |
+                    Timeout in milliseconds. Defaults to LEAD_TIMEOUT env var
+                    (default 300s).
+      responses:
+        "200":
+          description: Task submitted and response received
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, response]
+                properties:
+                  ok:
+                    type: boolean
+                  response:
+                    type: string
+                    description: Claude's response text
+                  taskId:
+                    type: string
+                    nullable: true
+                    description: Task ID extracted from the response, or the session ID
+                  usage:
+                    type: object
+                    nullable: true
+                    description: Token usage information
+        "400":
+          description: Missing required parameter
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Task submission failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: Lead Agent has crashed and needs restart
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "504":
+          description: Task execution timed out
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /task/{taskId}/status:
+    get:
+      tags: [task]
+      summary: Get status of a specific task
+      description: |
+        Returns the status and details of a task by its ID. Reads from the
+        `.tasks/task_{id}.json` file on disk.
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Task ID
+      responses:
+        "200":
+          description: Task status retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, task]
+                properties:
+                  ok:
+                    type: boolean
+                    enum: [true]
+                  task:
+                    type: object
+                    description: Task details (structure depends on task-store implementation)
+        "400":
+          description: Missing task ID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Task not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /tasks/list:
+    get:
+      tags: [task]
+      summary: List all tasks
+      description: |
+        Returns a list of all tasks from the `.tasks/` directory on disk.
+        Each entry includes summary fields: id, title, status, assignee, updated.
+      responses:
+        "200":
+          description: Task list retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, tasks]
+                properties:
+                  ok:
+                    type: boolean
+                    enum: [true]
+                  tasks:
+                    type: array
+                    items:
+                      type: object
+                      description: Task summary object
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Failed to list tasks
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /task/{taskId}/cancel:
+    post:
+      tags: [task]
+      summary: Cancel a running task (Not Implemented)
+      description: |
+        **Not yet implemented.** Returns 501. Reserved for future task
+        cancellation functionality.
+      deprecated: true
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Task ID to cancel
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "501":
+          description: Not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "400":
+          description: Missing task ID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /lead/status:
+    get:
+      tags: [lead]
+      summary: Get Lead Agent status
+      description: |
+        Returns the full status of the Lead Agent, which is internally backed
+        by the `general` CLI in the pool. Includes whether the agent is alive,
+        its session ID, timestamps, and crash information if applicable.
+      responses:
+        "200":
+          description: Lead Agent status retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, alive]
+                properties:
+                  ok:
+                    type: boolean
+                    enum: [true]
+                  alive:
+                    type: boolean
+                    description: Whether the general CLI is currently running
+                  sessionId:
+                    type: string
+                    nullable: true
+                    description: Claude CLI session ID of the general CLI
+                  startedAt:
+                    type: string
+                    format: date-time
+                    nullable: true
+                    description: When the general CLI was started
+                  lastActivity:
+                    type: string
+                    format: date-time
+                    nullable: true
+                    description: Timestamp of the most recent interaction
+                  crashInfo:
+                    type: object
+                    nullable: true
+                    description: Crash details, or null if the agent has not crashed
+                    properties:
+                      exitCode:
+                        type: integer
+                        nullable: true
+                      signal:
+                        type: string
+                        nullable: true
+                      crashedAt:
+                        type: string
+                        format: date-time
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /lead/restart:
+    post:
+      tags: [lead]
+      summary: Restart the Lead Agent
+      description: |
+        Restarts the Lead Agent (general CLI). If a `sessionId` is provided,
+        attempts to restore the existing Claude CLI session. Otherwise, stops
+        the current general CLI (if running) and starts a fresh session.
+        Clears any crash info on success.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                sessionId:
+                  type: string
+                  description: |
+                    Optional Claude CLI session ID to restore. If provided, the
+                    server attempts session restoration instead of a cold restart.
+                cwd:
+                  type: string
+                  description: Working directory (defaults to DEFAULT_CWD)
+      responses:
+        "200":
+          description: Lead Agent restarted (or restored) successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, sessionId, restored]
+                properties:
+                  ok:
+                    type: boolean
+                    enum: [true]
+                  sessionId:
+                    type: string
+                    description: Claude CLI session ID of the restarted general CLI
+                  restored:
+                    type: boolean
+                    description: True if an existing session was restored, false if a new session was created
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Restart (or restore) failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ============================================================================
   #  Tool endpoints
-  # ══════════════════════════════════════════════════════════════════════
+  # ============================================================================
 
   /bash:
     post:
