@@ -55,6 +55,14 @@ import {
   handleLeadStatus,
 } from './routes/task.js';
 
+import {
+  handleCliStart,
+  handleCliSend,
+  handleCliStop,
+  handleCliStatus,
+  handleCliList,
+} from './routes/cli.js';
+
 // ── Configuration ───────────────────────────────────────────────────────
 
 const PORT = parseInt(process.env.PORT || '18795');
@@ -95,6 +103,10 @@ const routes = {
   'GET /tasks/list':           handleTasksList,
   'POST /lead/restart':        handleLeadRestart,
   'GET /lead/status':          handleLeadStatus,
+  'POST /cli/start':           handleCliStart,
+  'POST /cli/send':            handleCliSend,
+  'POST /cli/stop':            handleCliStop,
+  'GET /cli/list':             handleCliList,
 };
 
 // ── Parameterized route patterns ────────────────────────────────────────
@@ -113,6 +125,12 @@ const paramRoutes = [
     pattern: /^\/task\/([^/]+)\/cancel$/,
     handler: handleTaskCancel,
     paramName: 'taskId',
+  },
+  {
+    method: 'GET',
+    pattern: /^\/cli\/([^/]+)\/status$/,
+    handler: handleCliStatus,
+    paramName: 'name',
   },
 ];
 

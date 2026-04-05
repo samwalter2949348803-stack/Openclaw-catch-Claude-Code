@@ -5,6 +5,10 @@
  * query task status, list tasks, cancel tasks, restart Lead, and query
  * Lead status.
  *
+ * P8-4: Backward compatibility — all existing endpoints preserved,
+ * internal implementation now delegates to cli-pool's "general" CLI
+ * instead of the old lead-agent.js singleton.
+ *
  * Handler signature follows the existing convention: (body, req, res)
  * Zero external dependencies — Node.js built-in APIs only.
  */
@@ -12,17 +16,17 @@
 import path from 'node:path';
 import { json } from '../lib/helpers.js';
 import {
-  startLeadAgent,
-  sendToLead,
-  isLeadAlive,
-  getLeadStatus,
-  restoreLeadAgent,
-} from '../lib/lead-agent.js';
+  startCli,
+  sendToCli,
+  getCli,
+  stopCli,
+  restoreCli,
+} from '../lib/cli-pool.js';
 import { readTask, listTasks } from '../lib/task-store.js';
 import { log } from '../lib/logger.js';
 
 const DEFAULT_CWD = process.env.DEFAULT_CWD || '/root';
-const SYSTEM_PROMPT_PATH = path.resolve(process.cwd(), '.agents', 'lead', 'system.md');
+const SYSTEM_PROMPT_PATH = path.resolve(process.cwd(), '.agents', 'general', 'system.md');
 const DEFAULT_LEAD_TIMEOUT = parseInt(process.env.LEAD_TIMEOUT || '300', 10) * 1000;
 
 // ── P7-1: Module-level crash info ──────────────────────────────────────
@@ -30,8 +34,8 @@ const DEFAULT_LEAD_TIMEOUT = parseInt(process.env.LEAD_TIMEOUT || '300', 10) * 1
 let leadCrashInfo = { crashed: false };
 
 /**
- * Record that the Lead Agent has crashed.
- * Called from the onExit callback when the Lead exits unexpectedly.
+ * Record that the Lead Agent (general CLI) has crashed.
+ * Called from the onExit callback when the CLI exits unexpectedly.
  */
 function recordCrash(exitCode, signal) {
   leadCrashInfo = {
@@ -40,29 +44,37 @@ function recordCrash(exitCode, signal) {
     signal: signal ?? null,
     timestamp: new Date().toISOString(),
   };
-  log('ERROR', 'task', 'Lead Agent crashed — recording crash info', leadCrashInfo);
+  log('ERROR', 'task', 'General CLI crashed — recording crash info', leadCrashInfo);
 }
 
 /**
- * Clear the crash info. Called when the Lead Agent is successfully restarted.
+ * Clear the crash info. Called when the general CLI is successfully restarted.
  */
 function clearCrashInfo() {
   leadCrashInfo = { crashed: false };
 }
 
+/**
+ * Check if the general CLI is alive (exists and not stopped).
+ */
+function isGeneralAlive() {
+  const cli = getCli('general');
+  return cli !== null && cli.status !== 'stopped';
+}
+
 // ── P6-1: POST /task/submit ─────────────────────────────────────────────
 
 /**
- * Submit a task to the Lead Agent.
+ * Submit a task to the Lead Agent (general CLI).
  *
  * Request body:
  *   { message: string, cwd?: string, timeout?: number }
  *
  * Flow:
  *   1. Validate input
- *   2. If Lead Agent crashed, return crash error
- *   3. If Lead Agent not alive, start it (lazy initialization)
- *   4. Send the message via sendToLead with timeout protection (P7-3)
+ *   2. If general CLI crashed, return crash error
+ *   3. If general CLI not alive, start it (lazy initialization)
+ *   4. Send the message via sendToCli("general", ...) with timeout protection (P7-3)
  *   5. Return the response
  */
 export async function handleTaskSubmit(body, req, res) {
@@ -76,7 +88,7 @@ export async function handleTaskSubmit(body, req, res) {
     }, 400);
   }
 
-  // P7-1: If the Lead Agent has crashed, refuse new tasks until restarted
+  // P7-1: If the general CLI has crashed, refuse new tasks until restarted
   if (leadCrashInfo.crashed) {
     return json(res, {
       ok: false,
@@ -92,20 +104,20 @@ export async function handleTaskSubmit(body, req, res) {
 
   const taskCwd = cwd || DEFAULT_CWD;
 
-  // Lazy-initialize Lead Agent if not alive
-  if (!isLeadAlive()) {
-    log('INFO', 'task', 'Lead Agent not alive, initializing before submit', {
+  // Lazy-initialize general CLI if not alive
+  if (!isGeneralAlive()) {
+    log('INFO', 'task', 'General CLI not alive, initializing before submit', {
       systemPromptPath: SYSTEM_PROMPT_PATH,
       cwd: taskCwd,
     });
 
     try {
-      await startLeadAgent({
+      await startCli('general', {
         systemPromptPath: SYSTEM_PROMPT_PATH,
         cwd: taskCwd,
         onExit: (exitCode, signal) => {
           // P7-1: Record crash info on unexpected exit
-          log('ERROR', 'task', 'Lead Agent exited unexpectedly', {
+          log('ERROR', 'task', 'General CLI exited unexpectedly', {
             exitCode,
             signal,
           });
@@ -113,7 +125,7 @@ export async function handleTaskSubmit(body, req, res) {
         },
       });
     } catch (err) {
-      log('ERROR', 'task', 'Failed to initialize Lead Agent', {
+      log('ERROR', 'task', 'Failed to initialize general CLI', {
         error: err.message,
       });
       return json(res, {
@@ -127,13 +139,13 @@ export async function handleTaskSubmit(body, req, res) {
   // P7-3: Determine the effective timeout
   const effectiveTimeout = timeout || DEFAULT_LEAD_TIMEOUT;
 
-  // Send message to Lead Agent
+  // Send message to general CLI
   try {
-    const result = await sendToLead(message, {
+    const result = await sendToCli('general', message, {
       timeout: effectiveTimeout,
     });
 
-    // Extract a task ID from the response if the Lead Agent included one,
+    // Extract a task ID from the response if the CLI included one,
     // otherwise use the session ID as a reference
     const taskId = result.parsed?.taskId
       || result.parsed?.task_id
@@ -153,7 +165,7 @@ export async function handleTaskSubmit(body, req, res) {
       || err.code === 'TIMEOUT';
 
     if (isTimeout) {
-      log('WARN', 'task', 'sendToLead timed out', {
+      log('WARN', 'task', 'sendToCli timed out', {
         timeout: effectiveTimeout,
         error: err.message,
       });
@@ -164,7 +176,7 @@ export async function handleTaskSubmit(body, req, res) {
       }, 504);
     }
 
-    log('ERROR', 'task', 'sendToLead failed during task submit', {
+    log('ERROR', 'task', 'sendToCli failed during task submit', {
       error: err.message,
     });
     return json(res, {
@@ -236,9 +248,6 @@ export async function handleTasksList(body, req, res) {
  * Cancel a running task.
  *
  * Currently returns 501 Not Implemented.
- * The Lead Agent operates in CLI-per-message mode (sendToLead completes
- * and the process exits). Killing a running CLI process mid-execution
- * requires more complex process management that will be added in Phase 7.
  */
 export async function handleTaskCancel(body, req, res) {
   const taskId = req.params?.taskId;
@@ -252,11 +261,11 @@ export async function handleTaskCancel(body, req, res) {
   }
 
   // Log the cancel attempt for observability
-  const leadStatus = getLeadStatus();
+  const generalCli = getCli('general');
   log('INFO', 'task', 'Task cancel requested (not yet implemented)', {
     taskId,
-    leadRunning: leadStatus.running,
-    leadPid: leadStatus.pid,
+    generalAlive: isGeneralAlive(),
+    generalSessionId: generalCli?.sessionId || null,
   });
 
   return json(res, {
@@ -270,14 +279,13 @@ export async function handleTaskCancel(body, req, res) {
 // ── P7-2: POST /lead/restart ────────────────────────────────────────────
 
 /**
- * Restart the Lead Agent.
+ * Restart the Lead Agent (general CLI).
  *
  * Request body:
  *   { sessionId?: string, cwd?: string }
  *
  * If a sessionId is provided, attempts to restore the existing session
- * using restoreLeadAgent(). Otherwise, starts a fresh session via
- * startLeadAgent().
+ * using restoreCli(). Otherwise, starts a fresh session via startCli().
  *
  * Clears any crash info on success.
  */
@@ -285,7 +293,7 @@ export async function handleLeadRestart(body, req, res) {
   const { sessionId, cwd } = body;
   const taskCwd = cwd || DEFAULT_CWD;
 
-  log('INFO', 'task', 'Lead Agent restart requested', {
+  log('INFO', 'task', 'Lead Agent (general CLI) restart requested', {
     hasSessionId: !!sessionId,
     cwd: taskCwd,
   });
@@ -293,9 +301,9 @@ export async function handleLeadRestart(body, req, res) {
   // Attempt restoration if a sessionId was provided
   if (sessionId && typeof sessionId === 'string') {
     try {
-      const result = restoreLeadAgent(sessionId);
+      const result = restoreCli('general', sessionId, { cwd: taskCwd });
       clearCrashInfo();
-      log('INFO', 'task', 'Lead Agent session restored via /lead/restart', {
+      log('INFO', 'task', 'General CLI session restored via /lead/restart', {
         sessionId: result.sessionId,
       });
       return json(res, {
@@ -304,7 +312,7 @@ export async function handleLeadRestart(body, req, res) {
         restored: true,
       });
     } catch (err) {
-      log('ERROR', 'task', 'Failed to restore Lead Agent session', {
+      log('ERROR', 'task', 'Failed to restore general CLI session', {
         sessionId,
         error: err.message,
       });
@@ -316,13 +324,17 @@ export async function handleLeadRestart(body, req, res) {
     }
   }
 
-  // No sessionId — start a new session
+  // No sessionId — stop existing if any, then start a new session
+  if (isGeneralAlive()) {
+    stopCli('general');
+  }
+
   try {
-    const result = await startLeadAgent({
+    const result = await startCli('general', {
       systemPromptPath: SYSTEM_PROMPT_PATH,
       cwd: taskCwd,
       onExit: (exitCode, signal) => {
-        log('ERROR', 'task', 'Lead Agent exited unexpectedly (after restart)', {
+        log('ERROR', 'task', 'General CLI exited unexpectedly (after restart)', {
           exitCode,
           signal,
         });
@@ -331,7 +343,7 @@ export async function handleLeadRestart(body, req, res) {
     });
 
     clearCrashInfo();
-    log('INFO', 'task', 'Lead Agent restarted with new session', {
+    log('INFO', 'task', 'General CLI restarted with new session', {
       sessionId: result.sessionId,
     });
     return json(res, {
@@ -340,7 +352,7 @@ export async function handleLeadRestart(body, req, res) {
       restored: false,
     });
   } catch (err) {
-    log('ERROR', 'task', 'Failed to start new Lead Agent session', {
+    log('ERROR', 'task', 'Failed to start new general CLI session', {
       error: err.message,
     });
     return json(res, {
@@ -354,21 +366,21 @@ export async function handleLeadRestart(body, req, res) {
 // ── P7-2: GET /lead/status ──────────────────────────────────────────────
 
 /**
- * Get the full Lead Agent status, including crash info if applicable.
+ * Get the full Lead Agent (general CLI) status, including crash info.
  *
  * Returns:
  *   { ok: true, alive: bool, sessionId, startedAt, lastActivity, crashInfo }
  */
 export async function handleLeadStatus(body, req, res) {
-  const status = getLeadStatus();
-  const alive = isLeadAlive();
+  const cli = getCli('general');
+  const alive = isGeneralAlive();
 
   return json(res, {
     ok: true,
     alive,
-    sessionId: status.sessionId,
-    startedAt: status.startedAt,
-    lastActivity: status.lastActivity,
+    sessionId: cli?.sessionId || null,
+    startedAt: cli?.startedAt || null,
+    lastActivity: cli?.lastActivity || null,
     crashInfo: leadCrashInfo.crashed ? {
       exitCode: leadCrashInfo.exitCode,
       signal: leadCrashInfo.signal,
