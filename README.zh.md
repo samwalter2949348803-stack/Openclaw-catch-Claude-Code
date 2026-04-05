@@ -44,6 +44,7 @@ Anthropic 限制了 OpenClaw 使用 Claude 订阅，对龙虾社区影响不小�
 ## 核心功能
 
 - **多 CLI 池** -- 3 个专职 agent（general / code / complex），各自是独立的 Claude Code CLI 进程
+- **按 agent 选模型** -- general 默认用 Sonnet（快+省），code/complex 默认用 Opus（强）；支持环境变量和 API 参数覆盖，灵活控制成本与性能
 - **独立 agent 工作空间** -- `.cli-workspaces/{name}/`，完整的 `.claude/` 自定义配置（CLAUDE.md、settings.json、rules、subagents）
 - **结构化输出路由** -- `[routing: general|code|complex]` 标签驱动自动分派，任意模型都能用
 - **OpenClaw 集成** -- HTTP-to-CLI 桥接 + 通过 hook 对接 Telegram
@@ -51,7 +52,7 @@ Anthropic 限制了 OpenClaw 使用 Claude 订阅，对龙虾社区影响不小�
 - **完全自定义你的龙虾** -- OpenClaw 的 SOUL.md、AGENTS.md、BOOTSTRAP.md、Skill、Hook 全部开放自定义，打造你自己的 AI 助手人格和工作流
 - **会话持久化** -- 原子写入 + schema 校验 + token 用量追踪
 - **138 个测试，零外部依赖** -- 仅使用 Node.js 18+ 内置 API
-- **0封号风险**
+- **零封号风险**
 
 ## 项目结构
 

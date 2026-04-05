@@ -44,6 +44,7 @@ Our approach (cheap):     OpenClaw → small model (nearly free) → Claude Code
 ## Core Features
 
 - **Multi-CLI pool** -- 3 specialized agents (general / code / complex), each an independent Claude Code CLI process
+- **Per-agent model selection** -- general defaults to Sonnet (fast + cheap), code/complex default to Opus (powerful); configurable via env vars and API params for flexible cost/performance control
 - **Per-agent workspaces** -- `.cli-workspaces/{name}/` with full `.claude/` customization (CLAUDE.md, settings.json, rules, subagents)
 - **Structured output routing** -- `[routing: general|code|complex]` tags drive automatic dispatch, works with any model
 - **OpenClaw integration** -- HTTP-to-CLI bridge + Telegram via hooks
