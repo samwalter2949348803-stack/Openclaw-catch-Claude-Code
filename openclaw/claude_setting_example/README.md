@@ -6,7 +6,6 @@
 
 ```
 claude_setting_example/
-  CLAUDE.md              -- Orchestrator 层级的根配置（已有）
   general/
     CLAUDE.md            -- General Agent 的项目指令
     .claude/
@@ -63,12 +62,12 @@ cp -r complex/.claude /root/my-project/.cli-workspaces/complex/
 
 ```bash
 # 自动使用 .cli-workspaces/code/ 作为 cwd
-curl -X POST http://localhost:3000/cli/start \
+curl -X POST http://localhost:18795/backend-api/claude-code/cli/start \
   -H "Content-Type: application/json" \
   -d '{"name": "code"}'
 
 # 也可以手动指定 cwd 覆盖默认值
-curl -X POST http://localhost:3000/cli/start \
+curl -X POST http://localhost:18795/backend-api/claude-code/cli/start \
   -H "Content-Type: application/json" \
   -d '{"name": "code", "cwd": "/custom/path"}'
 ```
