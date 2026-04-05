@@ -27,6 +27,13 @@ const DEFAULT_CWD = process.env.DEFAULT_CWD || '/root';
 const DEFAULT_CLI_TIMEOUT = parseInt(process.env.LEAD_TIMEOUT || '300', 10) * 1000;
 const CLI_WORKSPACES_DIR = path.resolve(process.cwd(), '.cli-workspaces');
 
+// Default model per agent — override via /cli/start { model: "..." }
+const DEFAULT_MODELS = {
+  general: process.env.CLI_MODEL_GENERAL || 'sonnet',
+  code: process.env.CLI_MODEL_CODE || null,       // null = CLI default (opus)
+  complex: process.env.CLI_MODEL_COMPLEX || null,  // null = CLI default (opus)
+};
+
 const COMPONENT = 'cli-route';
 
 // ── Helpers ────────────────────────────────────────────────────────────
@@ -90,12 +97,14 @@ export async function handleCliStart(body, req, res) {
   if (validateCliName(name, res)) return;
 
   const resolvedCwd = cwd || getDefaultCwd(name);
+  const resolvedModel = body.model || DEFAULT_MODELS[name] || null;
 
-  log('INFO', COMPONENT, 'CLI start requested', { name, cwd: resolvedCwd });
+  log('INFO', COMPONENT, 'CLI start requested', { name, cwd: resolvedCwd, model: resolvedModel });
 
   try {
     const result = await startCli(name, {
       cwd: resolvedCwd,
+      model: resolvedModel,
       onExit: (exitCode, signal) => {
         log('WARN', COMPONENT, 'CLI session exited', {
           name,
@@ -153,13 +162,15 @@ export async function handleCliSend(body, req, res) {
   // Lazy-start: if CLI is not running, start it automatically
   const existing = getCli(name);
   if (!existing || existing.status === 'stopped') {
-    log('INFO', COMPONENT, 'CLI not active, lazy-starting before send', { name });
+    const resolvedModel = DEFAULT_MODELS[name] || null;
+    log('INFO', COMPONENT, 'CLI not active, lazy-starting before send', { name, model: resolvedModel });
 
     const resolvedCwd = getDefaultCwd(name);
 
     try {
       await startCli(name, {
         cwd: resolvedCwd,
+        model: resolvedModel,
         onExit: (exitCode, signal) => {
           log('WARN', COMPONENT, 'CLI session exited (lazy-started)', {
             name,

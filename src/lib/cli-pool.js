@@ -45,11 +45,12 @@ const pool = new Map();
  * @param {object} options
  * @param {string} [options.systemPromptPath] - Absolute path to the system prompt file (optional)
  * @param {string} [options.cwd] - Working directory for the CLI process
+ * @param {string} [options.model] - Claude model to use (e.g. "sonnet", "opus")
  * @param {function} [options.onExit] - Callback: onExit(exitCode, signal)
  * @returns {Promise<{ name: string, sessionId: string, status: string }>}
  */
 export async function startCli(name, options = {}) {
-  const { systemPromptPath, cwd, onExit } = options;
+  const { systemPromptPath, cwd, onExit, model } = options;
 
   // If already active, return existing session
   const existing = pool.get(name);
@@ -102,6 +103,11 @@ export async function startCli(name, options = {}) {
     });
 
     args = ['-p', '你好，请开始工作。', '--output-format', 'json', '--dangerously-skip-permissions'];
+  }
+
+  // Add model flag if specified
+  if (model) {
+    args.push('--model', model);
   }
 
   const env = { ...process.env };
@@ -197,6 +203,7 @@ export async function startCli(name, options = {}) {
         status: 'idle',
         systemPromptPath: systemPromptPath || null,
         cwd: resolvedCwd,
+        model: model || null,
         startedAt: now,
         lastActivity: now,
         onExit: onExit || null,
@@ -253,6 +260,9 @@ export async function sendToCli(name, message, options = {}) {
   session.lastActivity = new Date().toISOString();
 
   const args = ['--resume', sessionId, '-p', message, '--output-format', 'json', '--dangerously-skip-permissions'];
+  if (session.model) {
+    args.push('--model', session.model);
+  }
 
   let result;
   try {
