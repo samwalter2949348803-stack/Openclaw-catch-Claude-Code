@@ -50,6 +50,7 @@ Our approach (cheap):     OpenClaw → small model (nearly free) → Claude Code
 - **OpenClaw integration** -- HTTP-to-CLI bridge + Telegram via hooks
 - **Custom scheduled tasks** -- cron / interval / one-shot scheduling
 - **Fully customize your lobster** -- OpenClaw's SOUL.md, AGENTS.md, BOOTSTRAP.md, Skills, and Hooks are all open for customization — build your own AI assistant personality and workflow
+- **Pluggable 3-layer architecture** -- Secretary (classify) → CLI (execute) → Personal OpenClaw (polish). Each layer is independent and replaceable. CLI results can be routed to your own personalized OpenClaw instance for post-processing (summarize, translate, style) before reaching the user
 - **Session persistence** -- atomic writes + schema validation + token usage tracking
 - **138 tests, zero external dependencies** -- Node.js 18+ built-in APIs only
 - **Zero ban risk**

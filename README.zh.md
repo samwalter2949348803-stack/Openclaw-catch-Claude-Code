@@ -50,6 +50,7 @@ Anthropic 限制了 OpenClaw 使用 Claude 订阅，对龙虾社区影响不小�
 - **OpenClaw 集成** -- HTTP-to-CLI 桥接 + 通过 hook 对接 Telegram
 - **自定义定时任务** -- cron / interval / one-shot 三种调度模式
 - **完全自定义你的龙虾** -- OpenClaw 的 SOUL.md、AGENTS.md、BOOTSTRAP.md、Skill、Hook 全部开放自定义，打造你自己的 AI 助手人格和工作流
+- **可插拔的三层架构** -- Secretary（分类）→ CLI（执行）→ Personal OpenClaw（润色），每层独立、可替换。CLI 结果可以路由到你自己的个性化 OpenClaw 做二次加工（总结、翻译、风格化）再发给用户
 - **会话持久化** -- 原子写入 + schema 校验 + token 用量追踪
 - **138 个测试，零外部依赖** -- 仅使用 Node.js 18+ 内置 API
 - **零封号风险**
