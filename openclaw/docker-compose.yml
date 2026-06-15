@@ -10,7 +10,7 @@ services:
       - ./mcp:/mcp
     env_file:
       - .env
-    restart: unless-stopped
+    restart: "no"
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
